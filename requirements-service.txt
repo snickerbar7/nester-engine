@@ -8,6 +8,7 @@ boto3>=1.34          # Cloudflare R2 via the S3 API
 pydantic>=2.7
 
 # OpenCASCADE (OCP) — for STEP input reading + solid CAD export (heavy, ~1GB).
-# Provisioned per the full-scope decision; the STEP *reader* is a follow-up
-# (the current tube reader is IGES-only). Pinned loosely; validate on 3.13.
-cadquery-ocp>=7.7
+# DEFERRED: added together with the STEP reader (the current tube reader is
+# IGES-only, so nothing imports OCP yet). Uncomment in the same change that
+# adds nester/tube STEP support + solid export wiring. Validate the 3.13 wheel.
+# cadquery-ocp>=7.7

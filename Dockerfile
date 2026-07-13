@@ -1,10 +1,9 @@
-# Harriet Nester service — Python 3.13 + tube/sheet engines + OpenCASCADE.
+# Harriet Nester service — Python 3.13 + tube/sheet engines.
+# NOTE: OpenCASCADE (cadquery-ocp) is DEFERRED until the STEP reader lands; when
+# re-added, restore the apt libs it needs: libgl1 libglu1-mesa libxrender1
+# libxext6 libsm6 libx11-6. The light path (IGES tube + DXF sheet) needs none —
+# reportlab/ezdxf/shapely/numpy/spyrrow ship self-contained wheels.
 FROM python:3.13-slim
-
-# Runtime libs OpenCASCADE (cadquery-ocp) needs; shapely/spyrrow ship wheels.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglu1-mesa libxrender1 libxext6 libsm6 libx11-6 \
-    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
