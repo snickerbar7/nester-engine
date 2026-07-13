@@ -7,6 +7,12 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+# Doppler CLI — Harriet is Doppler-canonical; the container pulls NESTER_SERVICE_TOKEN
+# + R2_* from the `nester` project at runtime via `doppler run` (Render supplies DOPPLER_TOKEN).
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+    && curl -Ls https://cli.doppler.com/install.sh | sh \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install deps first for layer caching.
 COPY requirements.txt requirements-service.txt ./
 RUN pip install --no-cache-dir -r requirements-service.txt
@@ -19,5 +25,5 @@ COPY solid_nest.py ./solid_nest.py
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 
-# Render provides $PORT; default 8000 for local runs.
-CMD ["sh", "-c", "uvicorn service.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Render provides $PORT + DOPPLER_TOKEN; `doppler run` injects the rest from Doppler `nester/prd`.
+CMD ["sh", "-c", "doppler run -- uvicorn service.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
