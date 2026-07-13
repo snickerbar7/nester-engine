@@ -1,0 +1,10 @@
+.venv/
+.venv-cad/
+__pycache__/
+*.pyc
+.pytest_cache/
+output/
+.git/
+.claude/
+tests/
+samples/

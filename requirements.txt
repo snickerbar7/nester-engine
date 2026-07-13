@@ -1,0 +1,24 @@
+# Main tool (Python 3.13 venv at .venv) — nesting + PDF/JSON output.
+# Migrated from 3.9 -> 3.13 so the flat-nesting engine (spyrrow, needs 3.11+)
+# runs in the same env as the tube tool. Recreate with:
+#   /opt/homebrew/bin/python3.13 -m venv .venv
+#   .venv/bin/pip install -r requirements.txt
+
+# --- 1D tube nesting + PDF/JSON/wireframe-IGES output ---
+reportlab>=4.0   # cut-plan PDF (optional: JSON/terminal output works without it)
+
+# --- 2D flat (sheet) nesting: sheet_nester ---
+ezdxf>=1.4       # DXF read + arc/spline flattening -> polygons
+shapely>=2.0     # polygon geometry: area, transforms, clearance offsets, overlap
+numpy>=1.26      # shapely dep + geometry math
+spyrrow>=0.9     # sparrow/jagua-rs irregular nester (Rust, MIT). Needs Python 3.11+
+
+# --- Dev / test only ---
+pytest>=7.0
+pypdf>=4.0       # used to verify PDF text content in checks
+
+# NOTE: the SOLID CAD exporter (solid_nest.py) needs OpenCASCADE (cadquery-ocp),
+# which is heavy and best kept isolated. It lives in a SEPARATE Python-3.13 env
+# (.venv-cad) so it can't destabilize the main tool:
+#   /opt/homebrew/bin/python3.13 -m venv .venv-cad
+#   .venv-cad/bin/pip install cadquery-ocp
