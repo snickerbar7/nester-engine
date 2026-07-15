@@ -22,6 +22,7 @@ service — never the account-wide one; it must cover BOTH buckets):
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from functools import lru_cache
 
 import boto3
@@ -61,11 +62,25 @@ def private_bucket() -> str | None:
     return os.environ.get("R2_PRIVATE_BUCKET_NAME") or None
 
 
+# Caller-specified bucket pair (env-agnostic single instance, 2026-07-15): the backend
+# passes ITS env's {public, private} pair per request; set request-scoped by app.py.
+# None → fall back to this service's own env pair (backward compatible).
+caller_buckets: ContextVar["dict | None"] = ContextVar("caller_buckets", default=None)
+
+
 def bucket_for_key(key: str) -> str:
     """records/ keys → the private bucket (when configured); everything else → public.
 
-    Mirrors Harriet backend `r2Client.bucketForKey` — keep in lockstep.
+    Mirrors Harriet backend `r2Client.bucketForKey` — keep in lockstep. A caller-supplied
+    bucket pair (request-scoped) wins over the env pair, so ONE instance serves callers
+    from different environments correctly.
     """
+    pair = caller_buckets.get()
+    if pair is not None:
+        priv = pair.get("private")
+        if priv and key.startswith("records/"):
+            return priv
+        return pair["public"]
     priv = private_bucket()
     if priv and key.startswith("records/"):
         return priv
@@ -85,7 +100,9 @@ def put_bytes(key: str, data: bytes, content_type: str) -> None:
     private CacheControl; public-prefix objects keep the immutable-public header
     (like Harriet's uploadService).
     """
-    private = key.startswith("records/") and private_bucket() is not None
+    pair = caller_buckets.get()
+    has_private = (pair.get("private") if pair is not None else private_bucket()) is not None
+    private = key.startswith("records/") and has_private
     _client().put_object(
         Bucket=bucket_for_key(key),
         Key=key,
