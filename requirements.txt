@@ -16,6 +16,7 @@ spyrrow>=0.9     # sparrow/jagua-rs irregular nester (Rust, MIT). Needs Python 3
 # --- Dev / test only ---
 pytest>=7.0
 pypdf>=4.0       # used to verify PDF text content in checks
+httpx>=0.27      # FastAPI TestClient (service/ route tests; not a runtime dep)
 
 # NOTE: the SOLID CAD exporter (solid_nest.py) needs OpenCASCADE (cadquery-ocp),
 # which is heavy and best kept isolated. It lives in a SEPARATE Python-3.13 env

@@ -1,9 +1,13 @@
 """Cloudflare R2 access via the S3 API (boto3).
 
 R2 is S3-compatible. The service reads input CAD files by key and writes shop
-artifacts by key. Harriet's key scheme (do not diverge):
+artifacts by key.
 
-    records/{companyId}/{recordId}/documents/{timestamp}-{uuid}.ext
+**Object keys are OPAQUE.** The caller constructs every key and every output
+prefix; the service never builds one from domain concepts of its own and never
+assumes a layout. The only rule it enforces is the per-client key prefix
+configured in ``service.core.auth`` (so one client cannot read or write
+another's objects).
 
 Credentials come from the environment (a BUCKET-SCOPED R2 token, minted for this
 service — never the account-wide one):
@@ -55,7 +59,7 @@ def get_bytes(key: str) -> bytes:
 
 
 def put_bytes(key: str, data: bytes, content_type: str) -> None:
-    """Upload bytes to a key (immutable, like Harriet's uploadService)."""
+    """Upload bytes to a key (immutable — artifacts are never rewritten in place)."""
     _client().put_object(
         Bucket=bucket(),
         Key=key,

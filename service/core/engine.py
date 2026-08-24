@@ -1,10 +1,12 @@
 """Orchestration over the existing tube + sheet pipelines.
 
-Downloads inputs from R2, runs the unchanged Nester algorithms, and maps the
-tube result onto Harriet's `NestResult` contract. Artifacts (PDF / nested DXF /
-IGES) are written to a temp dir and uploaded back to R2.
+Downloads inputs from R2, runs the unchanged Nester algorithms, and returns the
+NATIVE result shape: snake_case, the engine's own vocabulary (`bars_needed`,
+`yield_pct`, `stock_length_mm`, ...). Artifacts (PDF / nested DXF / IGES) are
+written to a temp dir and uploaded back to R2 under the caller's opaque prefix.
 
 Nothing here re-implements a solver — it calls `nester.tube` / `nester.sheet`.
+Nothing here knows about a specific client: contract packages adapt this shape.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import r2
+from . import r2  # object keys are opaque strings supplied by the caller
 
 # --- tube pipeline (unchanged engine) ---
 from nester.tube.cli import _load_parts as _tube_load_parts
@@ -65,7 +67,7 @@ def _materialize(files: List[InFile], into: str) -> List[str]:
 
 
 # --------------------------------------------------------------------------- #
-# EXTRACT — intent-independent, deterministic (feeds Harriet's perception path)
+# EXTRACT — intent-independent, deterministic (geometry in, parts out)
 # --------------------------------------------------------------------------- #
 
 def extract_tube(files: List[InFile], profile_regex: str, qty_regex: Optional[str]) -> Dict[str, Any]:
@@ -83,7 +85,7 @@ def extract_tube(files: List[InFile], profile_regex: str, qty_regex: Optional[st
             order.append(k)
         agg[k] += 1
     out_parts = [
-        {"length": length, "profile": profile, "qty": agg[k], "label": label}
+        {"label": label, "profile": profile, "qty": agg[k], "length_mm": length}
         for k in order
         for (label, length, profile) in [k]
     ]
@@ -115,38 +117,39 @@ def extract_sheet(files: List[InFile], qty_regex: Optional[str]) -> Dict[str, An
                 parts_out.append({
                     "label": fp.name,
                     "qty": fp.qty,
-                    "width": round(w, 3),
-                    "height": round(h, 3),
-                    "area": round(fp.area, 3),
+                    "width_mm": round(w, 3),
+                    "height_mm": round(h, 3),
+                    "area_mm2": round(fp.area, 3),
                     "holes": len(fp.holes),
                 })
     return {"mode": "sheet", "parts": parts_out, "errors": errors}
 
 
 # --------------------------------------------------------------------------- #
-# NEST — tube result mapped onto Harriet's NestResult; artifacts to R2
+# NEST — native (engine-vocabulary) result; artifacts to R2
 # --------------------------------------------------------------------------- #
 
-def _profile_result_to_plan(r: ProfileResult) -> Dict[str, Any]:
-    """Map a Python ProfileResult onto Harriet's ProfilePlan (types.ts)."""
+def profile_result_to_dict(r: ProfileResult) -> Dict[str, Any]:
+    """One packed profile in the engine's own vocabulary (snake_case, mm)."""
     total_drop = sum(b.remnant for b in r.bars)
     return {
         "profile": r.profile,
+        "bars_needed": r.bar_count,
+        "stock_length_mm": round(r.spec.stock_length, 4),
+        "usable_length_mm": round(r.spec.usable_length, 4),
+        "total_part_length_mm": round(r.total_part_length, 4),
+        "total_drop_mm": round(total_drop, 4),
+        "yield_pct": round(r.yield_pct, 2),
         "bars": [
             {
-                "barIndex": b.index + 1,  # Harriet BarPlan.barIndex is 1-based
-                "pieces": [round(p.part.length, 4) for p in b.placements],
-                "drop": round(b.remnant, 4),
+                "bar_index": b.index + 1,  # 1-based: bar 1 is the first bar off the rack
+                "pieces_mm": [round(p.part.length, 4) for p in b.placements],
+                "drop_mm": round(b.remnant, 4),
             }
             for b in r.bars
         ],
-        "barsNeeded": r.bar_count,
-        "totalPartLength": round(r.total_part_length, 4),
-        "totalDrop": round(total_drop, 4),
-        "yieldPct": round(r.yield_pct, 2),
-        "usableLength": round(r.spec.usable_length, 4),
         "unplaceable": [
-            {"length": round(p.length, 4), "profile": r.profile, "qty": 1, "label": p.name}
+            {"label": p.name, "profile": r.profile, "qty": 1, "length_mm": round(p.length, 4)}
             for p in r.unplaceable
         ],
     }
@@ -175,7 +178,7 @@ def _upload_artifacts(local_files: List[str], out_prefix: str) -> List[Dict[str,
             data = fh.read()
         ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
         r2.put_bytes(key, data, ctype)
-        arts.append({"key": key, "filename": fname, "contentType": ctype, "size": len(data)})
+        arts.append({"key": key, "filename": fname, "content_type": ctype, "size": len(data)})
     return arts
 
 
@@ -203,8 +206,8 @@ def nest_tube(
         results: List[ProfileResult] = pack_all(parts, specs)
 
         nest_result = {
-            "profiles": [_profile_result_to_plan(r) for r in results],
-            "barsTotal": sum(r.bar_count for r in results),
+            "bars_total": sum(r.bar_count for r in results),
+            "profiles": [profile_result_to_dict(r) for r in results],
         }
 
         artifacts: List[Dict[str, Any]] = []

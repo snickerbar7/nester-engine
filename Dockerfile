@@ -8,8 +8,9 @@ FROM python:3.13-slim
 WORKDIR /app
 
 # Doppler CLI from the official image (no install-script/gpg fragility). Harriet is
-# Doppler-canonical; the container pulls NESTER_SERVICE_TOKEN + R2_* from the `nester`
-# project at runtime via `doppler run` (Render supplies DOPPLER_TOKEN).
+# Doppler-canonical; the container pulls NESTER_API_KEYS (or the legacy
+# NESTER_SERVICE_TOKEN) + R2_* from the `nester` project at runtime via
+# `doppler run` (Render supplies DOPPLER_TOKEN).
 COPY --from=dopplerhq/cli:3 /bin/doppler /usr/local/bin/doppler
 
 # Install deps first for layer caching.
