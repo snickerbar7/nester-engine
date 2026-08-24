@@ -33,11 +33,14 @@ NATIVE_NEST = {
     "mode": "tube", "unit": "mm",
     "result": {
         "bars_total": 1,
+        "new_bars_total": 1,
         "profiles": [{
-            "profile": "2x2_c18", "bars_needed": 1, "stock_length_mm": 6000.0,
+            "profile": "2x2_c18", "bars_needed": 1, "new_bars_needed": 1,
+            "remnants_used": [], "stock_length_mm": 6000.0,
             "usable_length_mm": 5700.0, "total_part_length_mm": 1208.0,
             "total_drop_mm": 4480.0, "yield_pct": 21.19,
-            "bars": [{"bar_index": 1, "pieces_mm": [302.0] * 4, "drop_mm": 4480.0}],
+            "bars": [{"bar_index": 1, "stock_length_mm": 6000.0, "source": "nuevo",
+                      "pieces_mm": [302.0] * 4, "drop_mm": 4480.0}],
             "unplaceable": [],
         }],
     },
@@ -140,6 +143,22 @@ def test_harriet_nest_response_is_camelcase(client):
     assert body["artifacts"][0]["contentType"] == "application/pdf"
 
 
+def test_harriet_nest_ignores_extra_stock_entirely(client, monkeypatch):
+    """E9 is /v1-only: the frozen contract neither accepts nor forwards it."""
+    seen = {}
+    monkeypatch.setattr(engine, "nest_tube",
+                        lambda files, **kw: (seen.update(kw), dict(NATIVE_NEST))[1])
+    body = client.post("/nest", headers=HARRIET, json={
+        "files": TUBE_FILES, "stock_length": 6000,
+        "extra_stock": [{"profile": "2x2_c18", "length_mm": 2140, "label": "R-0001"}],
+    }).json()
+    assert "extra_stock" not in seen
+    prof = body["result"]["profiles"][0]
+    assert set(prof) == {"profile", "bars", "barsNeeded", "totalPartLength",
+                         "totalDrop", "yieldPct", "usableLength", "unplaceable"}
+    assert set(prof["bars"][0]) == {"barIndex", "pieces", "drop"}
+
+
 def test_harriet_nest_requires_stock_length(client):
     r = client.post("/nest", json={"files": TUBE_FILES}, headers=HARRIET)
     assert r.status_code == 422
@@ -153,10 +172,13 @@ def test_v1_nest_returns_snake_case_engine_vocabulary(client):
         "out_prefix": "web/u1/out"}).json()
     assert body["result"]["bars_total"] == 1
     prof = body["result"]["profiles"][0]
-    assert set(prof) == {"profile", "bars_needed", "stock_length_mm", "usable_length_mm",
+    assert set(prof) == {"profile", "bars_needed", "new_bars_needed", "remnants_used",
+                         "stock_length_mm", "usable_length_mm",
                          "total_part_length_mm", "total_drop_mm", "yield_pct",
                          "bars", "unplaceable"}
-    assert prof["bars"] == [{"bar_index": 1, "pieces_mm": [302.0] * 4, "drop_mm": 4480.0}]
+    assert prof["bars"] == [{"bar_index": 1, "stock_length_mm": 6000.0,
+                             "source": "nuevo", "pieces_mm": [302.0] * 4,
+                             "drop_mm": 4480.0}]
     assert body["artifacts"][0]["content_type"] == "application/pdf"
     assert "contentType" not in body["artifacts"][0]
 
@@ -178,6 +200,45 @@ def test_v1_nest_passes_mm_params_through_to_the_engine(client, monkeypatch):
     assert seen["front_trim"] == 10
     assert seen["back_trim"] == 300
     assert seen["per_profile"] == {"2x2_c18": 6100}
+
+
+def test_v1_nest_passes_extra_stock_through_to_the_engine(client, monkeypatch):
+    seen = {}
+
+    def spy(files, **kw):
+        seen.update(kw)
+        return dict(NATIVE_NEST)
+
+    monkeypatch.setattr(engine, "nest_tube", spy)
+    r = client.post("/v1/nest", headers=WEB, json={
+        "files": WEB_FILES, "stock_length_mm": 6000,
+        "extra_stock": [{"profile": "2x2_C18", "length_mm": 2140, "label": " R-0001 "}]})
+    assert r.status_code == 200
+    assert seen["extra_stock"] == [
+        {"profile": "2x2_C18", "length_mm": 2140.0, "label": "R-0001"}]
+
+
+def test_v1_nest_extra_stock_defaults_to_empty(client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(engine, "nest_tube",
+                        lambda files, **kw: (seen.update(kw), dict(NATIVE_NEST))[1])
+    client.post("/v1/nest", headers=WEB,
+                json={"files": WEB_FILES, "stock_length_mm": 6000})
+    assert seen["extra_stock"] == []
+
+
+def test_v1_nest_rejects_unusable_extra_stock(client):
+    bad = [
+        {"profile": "2x2_c18", "length_mm": 2140, "label": "  "},   # no label
+        {"profile": "2x2_c18", "length_mm": 0, "label": "R-1"},     # no length
+        {"profile": "2x2_c18", "length_mm": -5, "label": "R-1"},
+        {"profile": " ", "length_mm": 2140, "label": "R-1"},        # no profile
+        {"profile": "2x2_c18", "length_mm": 2140},                  # label missing
+    ]
+    for entry in bad:
+        r = client.post("/v1/nest", headers=WEB, json={
+            "files": WEB_FILES, "stock_length_mm": 6000, "extra_stock": [entry]})
+        assert r.status_code == 422, entry
 
 
 def test_v1_nest_requires_stock_length_mm(client):

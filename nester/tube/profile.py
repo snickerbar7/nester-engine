@@ -65,11 +65,20 @@ def profile_from_filename(path: str, pattern: str = DEFAULT_PROFILE_REGEX) -> st
             f"Pass --profile-regex to match your naming convention."
         )
     raw = m.groupdict().get("profile") or m.group(1)
-    return _normalize(raw)
+    return normalize_profile(raw)
 
 
-def _normalize(raw: str) -> str:
+def normalize_profile(raw: str) -> str:
+    """Canonical profile key: lowercase, 'x' separators ('40X40X2' -> '40x40x2').
+
+    Anything that keys a profile — parsed filenames, CLI ``--stock`` overrides,
+    API-supplied remnant profiles — must go through this, or the same profile
+    lands in two buckets.
+    """
     return raw.replace("X", "x").lower()
+
+
+_normalize = normalize_profile  # backwards-compatible alias
 
 
 # Round profile: "d32" / "od25.4", optionally with a "_c##" gauge suffix.

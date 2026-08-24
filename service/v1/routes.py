@@ -52,12 +52,25 @@ class ExtractRequest(BaseModel):
     qty_regex: Optional[str] = DEFAULT_QTY_REGEX
 
 
+class ExtraStockRef(BaseModel):
+    """One leftover piece of bar (retazo) offered to the nest as extra stock."""
+
+    profile: str = Field(..., description="profile key as parsed from filenames (40x40x2)")
+    length_mm: float = Field(..., description="the piece's real length in mm")
+    label: str = Field(..., description="the shop's id for that piece (R-0001)")
+
+
 class NestRequest(BaseModel):
     files: List[FileRef]
     mode: str = Field("auto", description="tube | sheet | auto (sheet -> 501)")
     stock_length_mm: Optional[float] = None
     per_profile_stock_length_mm: Optional[Dict[str, float]] = Field(
         None, description="per-profile stock length override, keyed by profile")
+    extra_stock: List[ExtraStockRef] = Field(
+        default_factory=list,
+        description="remnants on the rack; the nest consumes them before buying "
+                    "new bars. Entries for profiles not in the job are warned about, "
+                    "not rejected.")
     kerf_mm: float = 0.0
     front_trim_mm: float = 0.0
     back_trim_mm: float = 0.0
@@ -97,6 +110,24 @@ def _infiles(files: List[FileRef]) -> List[InFile]:
 
 def _resolve_mode(mode: str, files: List[InFile]) -> str:
     return engine.infer_mode(files) if mode == "auto" else mode
+
+
+def _validate_extra_stock(entries: List[ExtraStockRef]) -> List[Dict[str, Any]]:
+    """Reject unusable remnants (422). A remnant with no label can't be pulled
+    off the rack, and a non-positive length isn't a piece of bar."""
+    out: List[Dict[str, Any]] = []
+    for e in entries:
+        if not e.label.strip():
+            raise HTTPException(status_code=422, detail="extra_stock: label must not be empty")
+        if e.length_mm <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail=f"extra_stock {e.label!r}: length_mm must be > 0, got {e.length_mm}")
+        if not e.profile.strip():
+            raise HTTPException(
+                status_code=422, detail=f"extra_stock {e.label!r}: profile must not be empty")
+        out.append({"profile": e.profile, "length_mm": e.length_mm, "label": e.label.strip()})
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -141,11 +172,13 @@ def nest(req: NestRequest, client: Client = Depends(require_client)) -> Dict[str
         raise HTTPException(status_code=501, detail=SHEET_NOT_IMPLEMENTED)
     if req.stock_length_mm is None:
         raise HTTPException(status_code=422, detail="stock_length_mm required for tube nesting")
+    extra_stock = _validate_extra_stock(req.extra_stock)
     try:
         return engine.nest_tube(
             files, stock_length=req.stock_length_mm,
             per_profile=req.per_profile_stock_length_mm, kerf=req.kerf_mm,
             front_trim=req.front_trim_mm, back_trim=req.back_trim_mm,
+            extra_stock=extra_stock,
             profile_regex=req.profile_regex, qty_regex=req.qty_regex, unit="mm",
             job_name=req.job_name, lang=req.lang, out_prefix=req.out_prefix,
         )

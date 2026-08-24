@@ -18,12 +18,13 @@ import sys
 from typing import Dict, List
 
 from .iges import IgesParseError, check_straight, read_tube
-from .model import Part, ProfileResult, StockSpec
+from .model import ExtraStock, Part, ProfileResult, StockSpec
 from .packing import pack_all
 from .profile import (
     DEFAULT_PROFILE_REGEX,
     DEFAULT_QTY_REGEX,
     ProfileParseError,
+    normalize_profile,
     parse_profile_dims,
     profile_from_filename,
     quantity_from_filename,
@@ -151,6 +152,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="default stock bar length (mm) for all profiles")
     p.add_argument("--stock", action="append", default=[], metavar="PROFILE=MM",
                    help="per-profile stock length override (repeatable)")
+    p.add_argument("--remnant", action="append", default=[], metavar="PROFILE=MM[:LABEL]",
+                   help="a leftover piece (retazo) available as extra stock; used "
+                        "before buying a new bar (repeatable). LABEL defaults to R-000n.")
     p.add_argument("--kerf", type=float, default=0.0, help="saw kerf per cut (mm)")
     p.add_argument("--front-trim", type=float, default=0.0, help="clamp/loading dead zone (mm)")
     p.add_argument("--back-trim", type=float, default=0.0, help="far-end dead zone / min remnant (mm)")
@@ -237,7 +241,9 @@ def _build_specs(parts: List[Part], args: argparse.Namespace) -> Dict[str, Stock
         if "=" not in item:
             raise SystemExit(f"--stock expects PROFILE=MM, got '{item}'")
         key, val = item.split("=", 1)
-        overrides[key.strip().lower()] = float(val)
+        overrides[normalize_profile(key.strip())] = float(val)
+
+    extra = _parse_remnants(getattr(args, "remnant", []))
 
     specs: Dict[str, StockSpec] = {}
     for profile in {p.profile for p in parts}:
@@ -247,8 +253,33 @@ def _build_specs(parts: List[Part], args: argparse.Namespace) -> Dict[str, Stock
             kerf=args.kerf,
             front_trim=args.front_trim,
             back_trim=args.back_trim,
+            extra_stock=tuple(extra.get(profile, ())),
         )
+    for profile in extra:
+        if profile not in specs:
+            print(f"  ! remnants for profile '{profile}' ignored: not in this job",
+                  file=sys.stderr)
     return specs
+
+
+def _parse_remnants(items: List[str]) -> Dict[str, List[ExtraStock]]:
+    """--remnant PROFILE=MM[:LABEL] -> {profile: [ExtraStock, ...]}."""
+    out: Dict[str, List[ExtraStock]] = {}
+    for n, item in enumerate(items, start=1):
+        if "=" not in item:
+            raise SystemExit(f"--remnant expects PROFILE=MM[:LABEL], got '{item}'")
+        key, val = item.split("=", 1)
+        length, _, label = val.partition(":")
+        try:
+            mm = float(length)
+        except ValueError:
+            raise SystemExit(f"--remnant length must be a number, got '{length}'")
+        try:
+            piece = ExtraStock(length=mm, label=label.strip() or f"R-{n:04d}")
+        except ValueError as e:
+            raise SystemExit(f"--remnant {item}: {e}")
+        out.setdefault(normalize_profile(key.strip()), []).append(piece)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -261,13 +292,22 @@ def _format_report(results: List[ProfileResult], errors_count: int) -> str:
     for r in results:
         total_bars += r.bar_count
         lines.append("")
-        lines.append(f"● Profile {r.profile}  —  {r.bar_count} bar(s) @ {r.spec.stock_length:g}mm"
+        extra = f"  (+ {len(r.remnants_used)} remnant(s))" if r.remnants_used else ""
+        lines.append(f"● Profile {r.profile}  —  {r.new_bars_needed} new bar(s) "
+                     f"@ {r.spec.stock_length:g}mm{extra}"
                      f"  ·  yield {r.yield_pct:.1f}%")
         lines.append(f"  kerf {r.spec.kerf:g}  front-trim {r.spec.front_trim:g}  "
                      f"back-trim {r.spec.back_trim:g}  usable {r.spec.usable_length:g}mm")
+        n_new = 0
         for bar in r.bars:
             cuts = ", ".join(f"{p.part.length:g}@{p.start:g}" for p in bar.placements)
-            lines.append(f"    bar {bar.index + 1}: {cuts}  | drop {bar.remnant:g}mm")
+            if bar.is_remnant:
+                src = f"remnant {bar.source}"
+            else:
+                n_new += 1                      # numbered over the bars actually bought
+                src = f"bar {n_new}"
+            lines.append(f"    {src} ({bar.stock_length:g}mm): {cuts}"
+                         f"  | drop {bar.remnant:g}mm")
         if r.unplaceable:
             names = ", ".join(f"{p.name}({p.length:g})" for p in r.unplaceable)
             lines.append(f"    ⚠ too long for stock: {names}")
@@ -283,11 +323,15 @@ def _as_dict(results: List[ProfileResult]) -> dict:
             {
                 "profile": r.profile,
                 "bars": r.bar_count,
+                "new_bars_needed": r.new_bars_needed,
+                "remnants_used": r.remnants_used,
                 "stock_length": r.spec.stock_length,
                 "yield_pct": round(r.yield_pct, 2),
                 "layout": [
                     {
                         "bar": b.index + 1,
+                        "stock_length": b.stock_length,
+                        "source": b.source,
                         "remnant": round(b.remnant, 3),
                         "cuts": [
                             {"part": p.part.name, "length": p.part.length,

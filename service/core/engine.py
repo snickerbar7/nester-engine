@@ -21,9 +21,9 @@ from . import r2  # object keys are opaque strings supplied by the caller
 
 # --- tube pipeline (unchanged engine) ---
 from nester.tube.cli import _load_parts as _tube_load_parts
-from nester.tube.model import ProfileResult, StockSpec
+from nester.tube.model import ExtraStock, ProfileResult, StockSpec
 from nester.tube.packing import pack_all
-from nester.tube.profile import DEFAULT_PROFILE_REGEX, DEFAULT_QTY_REGEX
+from nester.tube.profile import DEFAULT_PROFILE_REGEX, DEFAULT_QTY_REGEX, normalize_profile
 from nester.tube.report import write_reports as _tube_write_reports, _slug
 
 # --- sheet pipeline (unchanged engine) ---
@@ -134,7 +134,9 @@ def profile_result_to_dict(r: ProfileResult) -> Dict[str, Any]:
     total_drop = sum(b.remnant for b in r.bars)
     return {
         "profile": r.profile,
-        "bars_needed": r.bar_count,
+        "bars_needed": r.bar_count,          # TOTAL bars used (tramos + remnants)
+        "new_bars_needed": r.new_bars_needed,  # full tramos to BUY
+        "remnants_used": r.remnants_used,      # remnant labels, in bar order
         "stock_length_mm": round(r.spec.stock_length, 4),
         "usable_length_mm": round(r.spec.usable_length, 4),
         "total_part_length_mm": round(r.total_part_length, 4),
@@ -143,6 +145,8 @@ def profile_result_to_dict(r: ProfileResult) -> Dict[str, Any]:
         "bars": [
             {
                 "bar_index": b.index + 1,  # 1-based: bar 1 is the first bar off the rack
+                "stock_length_mm": round(b.stock_length, 4),
+                "source": b.source,        # "nuevo" for a tramo, else the remnant label
                 "pieces_mm": [round(p.part.length, 4) for p in b.placements],
                 "drop_mm": round(b.remnant, 4),
             }
@@ -155,18 +159,43 @@ def profile_result_to_dict(r: ProfileResult) -> Dict[str, Any]:
     }
 
 
-def _build_specs(profiles, stock_length, per_profile, kerf, front_trim, back_trim):
-    overrides = {k.strip().lower(): float(v) for k, v in (per_profile or {}).items()}
-    return {
+def _build_specs(profiles, stock_length, per_profile, kerf, front_trim, back_trim,
+                 extra_stock=None):
+    """Stock spec per profile, plus warnings for remnants nothing in the job matches.
+
+    ``extra_stock`` entries are ``{"profile", "length_mm", "label"}``; their
+    profile is normalized the same way parsed filenames are, and an entry that
+    matches no profile in the job is a warning, never an error — the job is
+    still nestable without that retazo.
+    """
+    overrides = {normalize_profile(k.strip()): float(v)
+                 for k, v in (per_profile or {}).items()}
+
+    extras: Dict[str, List[ExtraStock]] = {}
+    warnings: List[str] = []
+    for e in extra_stock or []:
+        raw = str(e["profile"]).strip()
+        prof = normalize_profile(raw)
+        label = str(e["label"])
+        if prof not in profiles:
+            warnings.append(
+                f"retazo {label} ignorado: perfil '{raw}' no está en el trabajo")
+            continue
+        extras.setdefault(prof, []).append(
+            ExtraStock(length=float(e["length_mm"]), label=label))
+
+    specs = {
         prof: StockSpec(
             profile=prof,
             stock_length=overrides.get(prof, stock_length),
             kerf=kerf,
             front_trim=front_trim,
             back_trim=back_trim,
+            extra_stock=tuple(extras.get(prof, ())),
         )
         for prof in profiles
     }
+    return specs, warnings
 
 
 def _upload_artifacts(local_files: List[str], out_prefix: str) -> List[Dict[str, Any]]:
@@ -190,6 +219,7 @@ def nest_tube(
     kerf: float = 0.0,
     front_trim: float = 0.0,
     back_trim: float = 0.0,
+    extra_stock: Optional[List[Dict[str, Any]]] = None,
     profile_regex: str = DEFAULT_PROFILE_REGEX,
     qty_regex: Optional[str] = DEFAULT_QTY_REGEX,
     unit: str = "mm",
@@ -202,16 +232,19 @@ def nest_tube(
         parts, errors, cross = _tube_load_parts(paths, profile_regex, qty_regex)
         if not parts:
             raise ValueError("no readable parts: " + "; ".join(errors) if errors else "no parts")
-        specs = _build_specs({p.profile for p in parts}, stock_length, per_profile, kerf, front_trim, back_trim)
+        specs, stock_warnings = _build_specs(
+            {p.profile for p in parts}, stock_length, per_profile, kerf,
+            front_trim, back_trim, extra_stock)
         results: List[ProfileResult] = pack_all(parts, specs)
 
         nest_result = {
             "bars_total": sum(r.bar_count for r in results),
+            "new_bars_total": sum(r.new_bars_needed for r in results),
             "profiles": [profile_result_to_dict(r) for r in results],
         }
 
         artifacts: List[Dict[str, Any]] = []
-        warnings: List[str] = []
+        warnings: List[str] = list(stock_warnings)
         if out_prefix:
             out_dir = os.path.join(tmp, "out")
             meta = {"generated": "", "kerf": kerf, "front_trim": front_trim,

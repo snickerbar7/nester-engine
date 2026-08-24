@@ -8,24 +8,41 @@ saw, not the math.
 Each placed part consumes ``length + kerf`` of the usable region (one cut to
 free it). This slightly over-reserves kerf on the last part of a bar, which is
 the safe direction for a real saw.
+
+Stock is a full tramo (unlimited) plus, optionally, the shop's remnants
+(``StockSpec.extra_stock`` — E9). When a part needs a bar that isn't open yet,
+the SMALLEST remnant that fits it wins; only when no remnant fits does the plan
+buy a new tramo. Smallest-first conserves the big remnants for the big parts,
+and every remnant is a one-off physical piece, so it can be opened at most once.
 """
 
 from __future__ import annotations
 
-from typing import Iterable, List
+from typing import Iterable, List, Tuple
 
-from .model import BarLayout, Part, Placement, ProfileResult, StockSpec
+from .model import NEW_BAR, BarLayout, Part, Placement, ProfileResult, StockSpec
+
+_EPS = 1e-9
 
 
 def pack_profile(parts: Iterable[Part], spec: StockSpec) -> ProfileResult:
-    """Nest one profile's parts onto bars of a single stock length."""
+    """Nest one profile's parts onto new tramos plus any remnants on the rack."""
     result = ProfileResult(profile=spec.profile, spec=spec)
-    usable = spec.usable_length
+    tramo_usable = spec.usable_length
 
-    # Separate parts that can never fit on a single bar.
+    # Remnant pool: (usable, length, label), smallest usable first. A remnant
+    # shorter than the trims has nothing to give, so it never enters the pool.
+    pool: List[Tuple[float, float, str]] = sorted(
+        (spec.usable_for(e.length), e.length, e.label)
+        for e in spec.extra_stock
+        if spec.usable_for(e.length) > 0
+    )
+    biggest_usable = max([tramo_usable] + [u for u, _l, _lb in pool])
+
+    # Separate parts that can never fit on ANY available bar.
     fits: List[Part] = []
     for p in parts:
-        if p.length + spec.kerf > usable + 1e-9:
+        if p.length + spec.kerf > biggest_usable + _EPS:
             result.unplaceable.append(p)
         else:
             fits.append(p)
@@ -37,16 +54,45 @@ def pack_profile(parts: Iterable[Part], spec: StockSpec) -> ProfileResult:
         need = part.length + spec.kerf
         placed = False
         for bar in result.bars:
-            if bar.remnant + 1e-9 >= need:
+            if bar.remnant + _EPS >= need:
                 _append(bar, part)
                 placed = True
                 break
-        if not placed:
-            bar = BarLayout(index=len(result.bars), spec=spec)
-            _append(bar, part)
-            result.bars.append(bar)
+        if placed:
+            continue
+        bar = _open_bar(result, spec, pool, need, tramo_usable)
+        if bar is None:
+            # Only an already-consumed remnant could ever have held it.
+            result.unplaceable.append(part)
+            continue
+        _append(bar, part)
+        result.bars.append(bar)
+
+    # Bars (remnants included) are only ever opened for a part that goes on
+    # them, so an empty bar in the layout would be a solver bug, not a plan.
+    assert all(b.placements for b in result.bars), f"{spec.profile}: empty bar in layout"
 
     return result
+
+
+def _open_bar(
+    result: ProfileResult,
+    spec: StockSpec,
+    pool: List[Tuple[float, float, str]],
+    need: float,
+    tramo_usable: float,
+) -> BarLayout | None:
+    """Start a bar for a part that fits no open one: smallest fitting remnant,
+    else a new tramo, else None (nothing left long enough)."""
+    for i, (usable, length, label) in enumerate(pool):   # ascending usable
+        if usable + _EPS >= need:
+            pool.pop(i)                                  # a remnant is used once
+            return BarLayout(index=len(result.bars), spec=spec,
+                             stock_length=length, source=label)
+    if need <= tramo_usable + _EPS:
+        return BarLayout(index=len(result.bars), spec=spec,
+                         stock_length=spec.stock_length, source=NEW_BAR)
+    return None
 
 
 def _append(bar: BarLayout, part: Part) -> None:

@@ -41,12 +41,16 @@ _LANG = {
         "buy_bars": "{n} barra(s) de {stock}",
         "buy_pcs": "{pcs} pzas",
         "buy_yld": "aprov. {yld:.0f}%",
-        "buy_total": "Total: {bars} barra(s)  ·  sobrante total {scrap}",
-        "per_bar": "Barra {i} — {pcs} pzas — sobrante {drop}",
+        "buy_total": "Total: {bars} tramo(s) a comprar  ·  sobrante total {scrap}",
+        "buy_remnants": "Retazos usados: {items}",
+        "per_bar": "{bar} — {pcs} pzas — sobrante {drop}",
+        "bar_new": "TRAMO {i}",
+        "bar_remnant": "RETAZO {label} ({stock})",
+        "with_remnants": " + {n} retazo(s)",
         "cutlist": "Lista de corte",
         "guide": "Guía de piezas  (color → pieza)",
         "too_long": "⚠ demasiado largo para la barra: {names}",
-        "usable": "útil {u} por barra",
+        "usable": "útil {u} por tramo",
         "scrap": "sobrante {d}",
         "footer": "Generado {date} · {job} · pág {p}",
         "params": "{nprof} perfil(es) · {bars} barra(s) · corte {kerf} · refrentado {ft}/{bt}",
@@ -58,12 +62,16 @@ _LANG = {
         "buy_bars": "{n} bar(s) of {stock}",
         "buy_pcs": "{pcs} pcs",
         "buy_yld": "yield {yld:.0f}%",
-        "buy_total": "Total: {bars} bar(s)  ·  total scrap {scrap}",
-        "per_bar": "Bar {i} — {pcs} pcs — drop {drop}",
+        "buy_total": "Total: {bars} bar(s) to buy  ·  total scrap {scrap}",
+        "buy_remnants": "Remnants used: {items}",
+        "per_bar": "{bar} — {pcs} pcs — drop {drop}",
+        "bar_new": "BAR {i}",
+        "bar_remnant": "REMNANT {label} ({stock})",
+        "with_remnants": " + {n} remnant(s)",
         "cutlist": "Cut list",
         "guide": "Parts guide  (color → part)",
         "too_long": "⚠ too long for stock: {names}",
-        "usable": "usable {u} per bar",
+        "usable": "usable {u} per full bar",
         "scrap": "drop {d}",
         "footer": "Generated {date} · {job} · p.{p}",
         "params": "{nprof} profile(s) · {bars} bar(s) · kerf {kerf} · trim {ft}/{bt}",
@@ -132,6 +140,35 @@ def _profile_label(slug: str) -> str:
     return s + gauge
 
 
+def _longest_bar(r: ProfileResult) -> float:
+    """Longest bar drawn for this profile — a remnant may exceed the tramo."""
+    return max([r.spec.stock_length] + [b.stock_length for b in r.bars])
+
+
+def _tramo_numbers(r: ProfileResult) -> Dict[int, int]:
+    """bar.index -> TRAMO ordinal. Remnants don't consume a tramo number, so
+    the operator's "TRAMO 3" is the third bar he actually buys."""
+    nums: Dict[int, int] = {}
+    n = 0
+    for b in r.bars:
+        if not b.is_remnant:
+            n += 1
+            nums[b.index] = n
+    return nums
+
+
+def _bar_label(L: Dict[str, str], bar: BarLayout, nums: Dict[int, int]) -> str:
+    if bar.is_remnant:
+        return L["bar_remnant"].format(label=bar.source, stock=_mm(bar.stock_length))
+    return L["bar_new"].format(i=nums[bar.index])
+
+
+def _remnant_items(results: List[ProfileResult]) -> List[str]:
+    """'R-0001 (2140 mm)' for every remnant consumed, in plan order."""
+    return [f"{b.source} ({_mm(b.stock_length)})"
+            for r in results for b in r.bars if b.is_remnant]
+
+
 def _color_for_lengths(r: ProfileResult) -> Dict[float, tuple]:
     lengths = sorted(
         {round(p.part.length, 2) for b in r.bars for p in b.placements}, reverse=True
@@ -152,17 +189,22 @@ def _as_dict(results: List[ProfileResult], job_name: str, meta: Dict, warnings: 
         "totals": {
             "profiles": len(results),
             "stock_bars": sum(r.bar_count for r in results),
+            "new_bars_needed": sum(r.new_bars_needed for r in results),
         },
         "profiles": [
             {
                 "profile": r.profile,
                 "bars": r.bar_count,
+                "new_bars_needed": r.new_bars_needed,
+                "remnants_used": r.remnants_used,
                 "stock_length": r.spec.stock_length,
                 "usable_length": r.spec.usable_length,
                 "yield_pct": round(r.yield_pct, 2),
                 "layout": [
                     {
                         "bar": b.index + 1,
+                        "stock_length": b.stock_length,
+                        "source": b.source,
                         "remnant": round(b.remnant, 3),
                         "cuts": [
                             {"part": p.part.name, "length": p.part.length,
@@ -239,17 +281,22 @@ def _write_pdf(results, path, job_name, meta, lang):
             c.setStrokeGray(0)
         y = _draw_profile_header(c, L, r, margin, y)
         cmap = _color_for_lengths(r)
-        scale = draw_w / r.spec.stock_length
+        # Mixed lengths: the longest bar in the group sets the scale, so a
+        # shorter remnant draws visibly shorter than a full tramo.
+        scale = draw_w / _longest_bar(r)
+        nums = _tramo_numbers(r)
         block_h = 9 + bar_h + 14 + 9   # ruler labels + bar + caption + gap
         for bar in r.bars:
             if y - block_h < margin:
                 y = new_page(y)
             y -= 9                                          # room for ruler labels
-            top = _draw_ruler(c, L, margin, y, draw_w, r.spec.stock_length)
-            _draw_bar(c, margin, top - bar_h, draw_w, bar_h, scale, r, bar, cmap)
+            bar_w = bar.stock_length * scale
+            top = _draw_ruler(c, L, margin, y, bar_w, bar.stock_length)
+            _draw_bar(c, margin, top - bar_h, bar_w, bar_h, scale, r, bar, cmap)
             c.setFont("Helvetica-Bold", 8)
             c.drawString(margin, top - bar_h - 11, L["per_bar"].format(
-                i=bar.index + 1, pcs=len(bar.placements), drop=_mm(bar.remnant)))
+                bar=_bar_label(L, bar, nums), pcs=len(bar.placements),
+                drop=_mm(bar.remnant)))
             y = top - bar_h - 14 - 9
 
         y = _draw_cutlist(c, L, r, margin, draw_w, y)
@@ -272,7 +319,10 @@ def _write_pdf(results, path, job_name, meta, lang):
 def _draw_summary(c, L, results, margin, draw_w, y) -> float:
     pad = 7
     line_h = 13
-    n_lines = len(results) + 1
+    # "what to buy" counts NEW tramos only — a remnant is already on the rack;
+    # the remnants consumed get their own line(s) so nobody buys them twice.
+    rem_lines = _wrap_remnant_lines(c, L, _remnant_items(results), draw_w - 2 * pad)
+    n_lines = len(results) + 1 + len(rem_lines)
     box_h = pad * 2 + 16 + n_lines * line_h
     top = y
     c.setFillColorRGB(0.96, 0.97, 0.99)
@@ -292,21 +342,46 @@ def _draw_summary(c, L, results, margin, draw_w, y) -> float:
     c.drawString(c1, ty, L["buy"])
     ty -= 16
     total_scrap = 0.0
-    total_bars = 0
+    total_new = 0
     for r in results:
-        total_bars += r.bar_count
+        total_new += r.new_bars_needed
         total_scrap += sum(b.remnant for b in r.bars)
         pcs = sum(len(b.placements) for b in r.bars)
         c.setFont("Helvetica-Bold", 9.5)
         c.drawString(c1, ty, _profile_label(r.profile))
         c.setFont("Helvetica", 9.5)
-        c.drawString(c2, ty, L["buy_bars"].format(n=r.bar_count, stock=_mm(r.spec.stock_length)))
+        c.drawString(c2, ty, L["buy_bars"].format(
+            n=r.new_bars_needed, stock=_mm(r.spec.stock_length)))
         c.drawString(c3, ty, L["buy_pcs"].format(pcs=pcs))
         c.drawString(c4, ty, L["buy_yld"].format(yld=r.yield_pct))
         ty -= line_h
     c.setFont("Helvetica-Bold", 9.5)
-    c.drawString(c1, ty, L["buy_total"].format(bars=total_bars, scrap=_mm(total_scrap)))
+    c.drawString(c1, ty, L["buy_total"].format(bars=total_new, scrap=_mm(total_scrap)))
+    for line in rem_lines:
+        ty -= line_h
+        c.setFont("Helvetica", 9)
+        c.setFillGray(0.25)
+        c.drawString(c1, ty, line)
+        c.setFillGray(0)
     return top - box_h
+
+
+def _wrap_remnant_lines(c, L, items: List[str], maxw: float) -> List[str]:
+    """'Retazos usados: R-0001 (…), R-0002 (…)', wrapped to the box width."""
+    if not items:
+        return []
+    prefix = L["buy_remnants"].format(items="")
+    lines: List[str] = []
+    line = prefix
+    for it in items:
+        trial = f"{line}{it}" if line in (prefix, "") else f"{line}, {it}"
+        if line not in (prefix, "") and c.stringWidth(trial, "Helvetica", 9) > maxw:
+            lines.append(line)
+            line = it
+        else:
+            line = trial
+    lines.append(line)
+    return lines
 
 
 def _draw_profile_header(c, L, r, margin, y) -> float:
@@ -314,8 +389,11 @@ def _draw_profile_header(c, L, r, margin, y) -> float:
     c.circle(margin + 3, y + 3, 3, stroke=0, fill=1)
     c.setFillGray(0)
     c.setFont("Helvetica-Bold", 11.5)
+    extra = (L["with_remnants"].format(n=len(r.remnants_used))
+             if r.remnants_used else "")
     c.drawString(margin + 12, y,
-                 f"{_profile_label(r.profile)}    {r.bar_count} × {_mm(r.spec.stock_length)}"
+                 f"{_profile_label(r.profile)}    "
+                 f"{r.new_bars_needed} × {_mm(r.spec.stock_length)}{extra}"
                  f"    ·    {r.yield_pct:.1f}%")
     y -= 11
     c.setFont("Helvetica", 7.5)

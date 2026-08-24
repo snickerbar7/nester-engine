@@ -40,11 +40,20 @@ IGES files ──▶ extract cut length ──▶ group by profile ──▶ pac
 - **Profile** is read from the **filename** via a configurable regex. Default
   matches `40x40x2`, `50X30X3`, `D32`, `OD25.4`. Mixed profiles per job are
   grouped and nested independently.
-- **Stock** = one length per profile (global `--stock-length`, with optional
-  `--stock PROFILE=MM` overrides).
+- **Stock** = one full-bar (tramo) length per profile (global `--stock-length`,
+  with optional `--stock PROFILE=MM` overrides).
+- **Retazos (E9)**: the shop's leftovers are extra stock. Pass them with
+  `--remnant PROFILE=MM[:LABEL]` (repeatable; label defaults to `R-000n`) — or
+  `extra_stock: [{profile, length_mm, label}]` on `POST /v1/nest`. They're a
+  finite pool: each piece is usable **once**, gets the same kerf/trims as a
+  tramo, and the solver spends the **smallest fitting** one before buying a new
+  bar (big retazos stay free for big parts). The plan then reports
+  `new_bars_needed` (what to BUY) separately from total bars, names every
+  retazo it consumed, and draws each bar at its own length. A retazo for a
+  profile that isn't in the job is a warning, never an error.
 - **Allowances**: `--kerf` per cut, `--front-trim` (clamp dead zone),
-  `--back-trim` (far-end remnant). Usable = stock − front − back. Each part
-  reserves `length + kerf`.
+  `--back-trim` (far-end remnant). Usable = bar length − front − back (for a
+  retazo too). Each part reserves `length + kerf`.
 - **Solver**: First Fit Decreasing — fast, deterministic, strong yield.
 
 ## Run a job

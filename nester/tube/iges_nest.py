@@ -35,8 +35,9 @@ def write_nest_iges(
         cmap = _length_colors(r)
         for bar in r.bars:
             yc = y_cursor
-            # full bar outline (default color) — shows total length + drop
-            w.box(0.0, r.spec.stock_length, yc, yc + W, 0.0, H, color=0)
+            # full bar outline (default color) — shows total length + drop.
+            # Each bar draws at ITS own length: a remnant is a shorter box.
+            w.box(0.0, bar.stock_length, yc, yc + W, 0.0, H, color=0)
             x0 = r.spec.front_trim
             for p in bar.placements:
                 a = x0 + p.start

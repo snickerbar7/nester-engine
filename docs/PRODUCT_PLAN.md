@@ -98,7 +98,7 @@ be confidently wrong.
 |---|-----|-----|
 | E7 | No calibre. | Calibre→mm table (negra / galvanizada differ); accept either everywhere. |
 | E8 | Material-cost estimate. | Profile → kg/m, sheet → kg/m² tables. User sets price (per kg / tramo / sheet); report adds a cost line + per-piece breakdown. **An output line, not a quoting module** — quoting is Harriet. |
-| E9 | One stock length per profile. | `StockSpec` takes a set of lengths (+ optional remnants); FFD picks per bar. |
+| E9 ✅ | One stock length per profile. | **DONE** — `StockSpec.extra_stock` takes the shop's remnants; FFD opens the smallest fitting retazo before buying a tramo (each usable once). Plan splits `new_bars_needed` from total bars, names the retazos used, draws mixed lengths. `/v1/nest` takes `extra_stock: [{profile, length_mm, label}]`; Harriet contract untouched. |
 | E11 | Stock catalog is implicit. | Mexican stock catalog as data (PTR sizes, calibres, lámina 4x8/4x10/5x10, tramo 6 m); pre-fills jobs; the AI reads it. |
 
 ### Tier 2 — breadth, after first paying users
@@ -176,10 +176,11 @@ hook); a clear statement of what happens to their files.
 > catalog; the AI never produces a number), two-pane UI restyled to the
 > Claude Design canvas (saved under that repo's `design/`), SVG nest view,
 > artifact downloads. In progress app-side: Historial, Máquinas presets,
-> provenance badges, Retazos v1 (inventory only). Next engine contracts,
-> in order: E9 remnant/multi-length stock (the design's "usar retazo"),
-> angle/bisel detection (design negotiates 45° ends), E8 weight, mixed
-> placas (E13), STEP (E12).
+> provenance badges, Retazos v1 (inventory only). **E9 ✅ landed in the engine**
+> (nesting against retazos — `extra_stock` on `/v1/nest`), so the design's
+> "usar retazo" is now a real engine capability the app can wire up. Next
+> engine contracts, in order: angle/bisel detection (design negotiates 45°
+> ends), E8 weight, mixed placas (E13), STEP (E12).
 
 **Phase 0 — Boundary (days).** A1–A4 + second API key on the existing Render
 service. A5 can slip if launch is tube-first.
@@ -192,7 +193,7 @@ AI intake loop, two-pane UI, results page. **Tube-only at launch** (sync,
 instant solves); 2D follows once A5/E1 land. Billing manual.
 
 **Phase 3 — 2D + polish.** Async jobs, sheet nesting in the UI, E3
-persistence, E5, calibre/catalog (E7, E11), cost line (E8/E9).
+persistence, E5, calibre/catalog (E7, E11), cost line (E8). *(E9 done.)*
 
 **Phase 4 — Commercial.** Stripe MX, white-label PDF, plans — only after real
 usage. Anything quoting-shaped ships in Harriet instead.
