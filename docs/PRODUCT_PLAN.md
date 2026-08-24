@@ -167,6 +167,20 @@ hook); a clear statement of what happens to their files.
 
 ## 6. Sequencing — fastest credible launch
 
+> **STATUS (2026-08-24)** — launched. Phase 0 ✅ (`/v1` with health/extract/
+> nest-tube/uploads/downloads, per-client keys, Harriet compat frozen).
+> Phase 1 partial: E2 ✅ E4 ✅ (E3/E5/E6 pending). Phase 2 ✅ LIVE at
+> https://harriet-nester.vercel.app — repo `snickerbar7/harriet-nester`
+> (this repo is `snickerbar7/nester-engine`): own auth, Neon, R2 via
+> presigned URLs, Sonnet 5 tool loop (cached system prompt + Mexican
+> catalog; the AI never produces a number), two-pane UI restyled to the
+> Claude Design canvas (saved under that repo's `design/`), SVG nest view,
+> artifact downloads. In progress app-side: Historial, Máquinas presets,
+> provenance badges, Retazos v1 (inventory only). Next engine contracts,
+> in order: E9 remnant/multi-length stock (the design's "usar retazo"),
+> angle/bisel detection (design negotiates 45° ends), E8 weight, mixed
+> placas (E13), STEP (E12).
+
 **Phase 0 — Boundary (days).** A1–A4 + second API key on the existing Render
 service. A5 can slip if launch is tube-first.
 

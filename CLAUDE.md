@@ -246,6 +246,18 @@ If a file contains geometry types not in the list above, `read_tube` raises and
 sanity-check the first run's lengths against known part lengths (and the BOM if
 there is one) before trusting a job.
 
+## The service layer + the web product (context)
+
+`service/` exposes the engine over HTTP from ONE Render deployment
+(https://harriet-nester.onrender.com) serving two clients with per-client
+keys: Harriet (frozen compat contract at `/extract` `/nest` `/health`) and
+**Harriet Nester**, the AI-operated nesting web product
+(https://harriet-nester.vercel.app, repo `snickerbar7/harriet-nester`,
+local `~/Documents/harriet-nester`). Neutral contract under `/v1`:
+`health` · `extract` · `nest` (tube sync; 2D → 501 pending async jobs) ·
+`uploads` / `downloads` (presigned PUT/GET, caller-constructed keys,
+prefix-scoped). Product plan + engine roadmap: `docs/PRODUCT_PLAN.md`.
+
 ## Shipping / branch policy (READ)
 
 **One branch. No staging.** `main` local = dev/experiments; **any push to
