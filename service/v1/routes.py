@@ -5,6 +5,8 @@
   POST /v1/nest          -> tube parts -> cut plan (+ artifacts to R2)
   POST /v1/uploads       -> presigned PUT URLs, so web clients can put CAD
                              files into R2 without holding R2 credentials
+  POST /v1/downloads     -> presigned GET URLs for the caller's own keys
+                             (shop artifacts back out of R2)
 
 Requests and responses are snake_case and name their units (`stock_length_mm`).
 Responses are the native `service.core.engine` shape, returned as-is: no
@@ -74,6 +76,15 @@ class UploadFileRequest(BaseModel):
 
 class UploadRequest(BaseModel):
     files: List[UploadFileRequest]
+
+
+class DownloadFileRequest(BaseModel):
+    key: str = Field(..., description="object key (opaque to the service)")
+    filename: str = Field("", description="optional save-as name (Content-Disposition)")
+
+
+class DownloadRequest(BaseModel):
+    files: List[DownloadFileRequest]
 
 
 UPLOAD_URL_EXPIRES_IN = 900
@@ -159,6 +170,24 @@ def uploads(req: UploadRequest, client: Client = Depends(require_client)) -> Dic
     return {"uploads": [
         {"key": f.key,
          "url": r2.presign_put(f.key, f.content_type, UPLOAD_URL_EXPIRES_IN),
+         "expires_in": UPLOAD_URL_EXPIRES_IN}
+        for f in files
+    ]}
+
+
+@router.post("/downloads")
+def downloads(req: DownloadRequest, client: Client = Depends(require_client)) -> Dict[str, Any]:
+    # Sync endpoints run in a threadpool; a prior harriet request on this thread
+    # may have left its caller bucket pair set. v1 always uses the env pair.
+    r2.caller_buckets.set(None)
+    files = req.files
+    if not files or len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(
+            status_code=422, detail=f"files must contain 1-{MAX_UPLOAD_FILES} entries")
+    enforce_request_scope(client, [f.key for f in files])
+    return {"downloads": [
+        {"key": f.key,
+         "url": r2.presign_get(f.key, UPLOAD_URL_EXPIRES_IN, f.filename),
          "expires_in": UPLOAD_URL_EXPIRES_IN}
         for f in files
     ]}

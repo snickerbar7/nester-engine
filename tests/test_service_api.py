@@ -247,3 +247,41 @@ def test_v1_uploads_happy_path(presign_client):
         assert entry["expires_in"] == 900
         assert entry["url"].startswith("https://acct123.r2.cloudflarestorage.com/pub-bucket/")
         assert key in entry["url"]
+
+
+# --- /v1/downloads ---------------------------------------------------------- #
+
+def test_v1_downloads_requires_auth(presign_client):
+    r = presign_client.post("/v1/downloads", json={
+        "files": [{"key": "web/jobs/abc/out/plan.pdf"}]})
+    assert r.status_code == 401
+
+
+def test_v1_downloads_key_outside_client_prefix_is_403(presign_client):
+    r = presign_client.post("/v1/downloads", headers=WEB, json={
+        "files": [{"key": "records/company/plan.pdf"}]})
+    assert r.status_code == 403
+
+
+def test_v1_downloads_empty_files_is_422(presign_client):
+    r = presign_client.post("/v1/downloads", headers=WEB, json={"files": []})
+    assert r.status_code == 422
+
+
+def test_v1_downloads_happy_path(presign_client):
+    r = presign_client.post("/v1/downloads", headers=WEB, json={"files": [
+        {"key": "web/jobs/abc/out/plan.pdf", "filename": "Plan_de_Corte.pdf"},
+        {"key": "web/jobs/abc/out/nido_S01.dxf"},
+    ]})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["downloads"]) == 2
+    first, second = body["downloads"]
+    assert first["key"] == "web/jobs/abc/out/plan.pdf"
+    assert first["expires_in"] == 900
+    assert first["url"].startswith("https://acct123.r2.cloudflarestorage.com/pub-bucket/")
+    # save-as name flows through Content-Disposition
+    assert "response-content-disposition=" in first["url"].lower()
+    assert "Plan_de_Corte.pdf" in first["url"].replace("%22", '"').replace("%20", " ")
+    # no filename -> no disposition override
+    assert "response-content-disposition" not in second["url"].lower()

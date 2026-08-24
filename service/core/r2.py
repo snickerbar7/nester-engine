@@ -102,6 +102,16 @@ def presign_put(key: str, content_type: str, expires_in: int = 900) -> str:
     )
 
 
+def presign_get(key: str, expires_in: int = 900, filename: str = "") -> str:
+    """Presigned GET URL so a caller can download a key directly from R2 without
+    holding R2 credentials (bucket resolved by key prefix, same as get/put_bytes).
+    `filename` sets Content-Disposition so browsers save with a human name."""
+    params = {"Bucket": bucket_for_key(key), "Key": key}
+    if filename:
+        params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
+    return _client().generate_presigned_url("get_object", Params=params, ExpiresIn=expires_in)
+
+
 def get_bytes(key: str) -> bytes:
     """Download one object's bytes by key (bucket resolved by prefix)."""
     resp = _client().get_object(Bucket=bucket_for_key(key), Key=key)
