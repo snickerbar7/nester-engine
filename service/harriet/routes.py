@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from nester.tube.profile import DEFAULT_PROFILE_REGEX, DEFAULT_QTY_REGEX
 
-from ..core import engine
+from ..core import engine, r2
 from ..core.auth import Client, enforce_request_scope, require_client
 from ..core.engine import InFile
 
@@ -35,8 +35,16 @@ class FileRef(BaseModel):
     filename: str = Field(..., description="original filename (profile+qty parsed from it)")
 
 
+class BucketPair(BaseModel):
+    """The CALLER's env bucket pair — lets one nester instance serve prod + staging
+    correctly (records/ → private). Omitted → this service's own env pair."""
+    public: str
+    private: Optional[str] = None
+
+
 class ExtractRequest(BaseModel):
     files: List[FileRef]
+    buckets: Optional[BucketPair] = None
     mode: str = Field("auto", description="tube | sheet | auto")
     profile_regex: str = DEFAULT_PROFILE_REGEX
     qty_regex: Optional[str] = DEFAULT_QTY_REGEX
@@ -45,6 +53,7 @@ class ExtractRequest(BaseModel):
 
 class NestRequest(BaseModel):
     files: List[FileRef]
+    buckets: Optional[BucketPair] = None
     mode: str = Field("auto", description="tube | sheet | auto")
     # tube stock
     stock_length: Optional[float] = None
@@ -162,6 +171,7 @@ def health() -> Dict[str, object]:
 
 @router.post("/extract")
 def extract(req: ExtractRequest, client: Client = Depends(require_client)) -> Dict[str, object]:
+    r2.caller_buckets.set(req.buckets.model_dump() if req.buckets else None)
     files = _infiles(req.files)
     if not files:
         raise HTTPException(status_code=422, detail="no files")
@@ -179,6 +189,7 @@ def extract(req: ExtractRequest, client: Client = Depends(require_client)) -> Di
 
 @router.post("/nest")
 def nest(req: NestRequest, client: Client = Depends(require_client)) -> Dict[str, object]:
+    r2.caller_buckets.set(req.buckets.model_dump() if req.buckets else None)
     files = _infiles(req.files)
     if not files:
         raise HTTPException(status_code=422, detail="no files")

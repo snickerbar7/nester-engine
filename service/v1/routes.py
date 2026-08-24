@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from nester.tube.profile import DEFAULT_PROFILE_REGEX, DEFAULT_QTY_REGEX
 
-from ..core import engine
+from ..core import engine, r2
 from ..core.auth import Client, enforce_request_scope, require_client
 from ..core.engine import InFile
 
@@ -85,6 +85,9 @@ def health() -> Dict[str, object]:
 
 @router.post("/extract")
 def extract(req: ExtractRequest, client: Client = Depends(require_client)) -> Dict[str, Any]:
+    # Sync endpoints run in a threadpool; a prior harriet request on this thread
+    # may have left its caller bucket pair set. v1 always uses the env pair.
+    r2.caller_buckets.set(None)
     files = _infiles(req.files)
     if not files:
         raise HTTPException(status_code=422, detail="no files")
@@ -100,6 +103,9 @@ def extract(req: ExtractRequest, client: Client = Depends(require_client)) -> Di
 
 @router.post("/nest")
 def nest(req: NestRequest, client: Client = Depends(require_client)) -> Dict[str, Any]:
+    # Sync endpoints run in a threadpool; a prior harriet request on this thread
+    # may have left its caller bucket pair set. v1 always uses the env pair.
+    r2.caller_buckets.set(None)
     files = _infiles(req.files)
     if not files:
         raise HTTPException(status_code=422, detail="no files")
