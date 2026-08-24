@@ -17,13 +17,14 @@ import os
 import sys
 from typing import Dict, List
 
-from .iges import IgesParseError, read_tube
+from .iges import IgesParseError, check_straight, read_tube
 from .model import Part, ProfileResult, StockSpec
 from .packing import pack_all
 from .profile import (
     DEFAULT_PROFILE_REGEX,
     DEFAULT_QTY_REGEX,
     ProfileParseError,
+    parse_profile_dims,
     profile_from_filename,
     quantity_from_filename,
 )
@@ -70,16 +71,30 @@ def main(argv: List[str] | None = None) -> int:
             "back_trim": args.back_trim,
             "lang": args.lang,
         }
-        files = write_reports(results, out_dir, job_name, meta)
+        # Attempt the IGES nest-layout write BEFORE the JSON so a failure (E4)
+        # can be recorded as a warning IN the JSON, rather than silently
+        # dropping the file with no trace. A failure here must not abort the
+        # job — the cut-plan PDF + JSON are the deliverable that matters most.
+        warnings: List[str] = []
+        iges_path = None
         if not args.no_iges:
             from .iges_nest import write_nest_iges
             from .report import _slug
+            os.makedirs(out_dir, exist_ok=True)
             iges_path = os.path.join(out_dir, f"{_slug(job_name)}_nest.igs")
-            write_nest_iges(results, iges_path, cross_sections)
+            try:
+                write_nest_iges(results, iges_path, cross_sections)
+            except Exception as e:
+                warnings.append(f"IGES nest-layout not written ({os.path.basename(iges_path)}): {e}")
+                iges_path = None
+        files = write_reports(results, out_dir, job_name, meta, warnings=warnings)
+        if iges_path:
             files.append(iges_path)
         print("\nWrote:")
         for f in files:
             print(f"  {f}")
+        for w in warnings:
+            print(f"  ! warning: {w}", file=sys.stderr)
         if args.shop_package:
             _run_cad("[shop]", out_dir, job_name, paths,
                      lambda py, script, slug, nest_json, src: [
@@ -198,6 +213,11 @@ def _load_parts(
         try:
             geo = read_tube(path)
         except (IgesParseError, OSError) as e:
+            errors.append(f"{name}: {e}")
+            continue
+        try:
+            check_straight(geo, parse_profile_dims(profile), path)
+        except ValueError as e:
             errors.append(f"{name}: {e}")
             continue
         cross_sections.setdefault(profile, geo.cross_section)

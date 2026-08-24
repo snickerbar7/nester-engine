@@ -211,6 +211,7 @@ def nest_tube(
         }
 
         artifacts: List[Dict[str, Any]] = []
+        warnings: List[str] = []
         if out_prefix:
             out_dir = os.path.join(tmp, "out")
             meta = {"generated": "", "kerf": kerf, "front_trim": front_trim,
@@ -221,12 +222,14 @@ def nest_tube(
                 iges_path = os.path.join(out_dir, f"{_slug(job_name)}_nest.igs")
                 write_nest_iges(results, iges_path, cross)
                 written.append(iges_path)
-            except Exception:
-                pass  # IGES preview is best-effort; the plan + PDF still stand
+            except Exception as e:
+                # IGES preview is best-effort; the plan + PDF still stand,
+                # but the caller must hear that a deliverable is missing.
+                warnings.append(f"IGES nest layout not written: {e}")
             artifacts = _upload_artifacts(written, out_prefix)
 
     return {"mode": "tube", "unit": unit, "result": nest_result,
-            "artifacts": artifacts, "errors": errors}
+            "artifacts": artifacts, "errors": errors, "warnings": warnings}
 
 
 def nest_sheet(
@@ -268,14 +271,17 @@ def nest_sheet(
         result_json = _sheet_as_dict(result, job_name, meta)
 
         artifacts: List[Dict[str, Any]] = []
+        warnings: List[str] = []
         if out_prefix:
             out_dir = os.path.join(tmp, "out")
             written = _sheet_write_reports(result, out_dir, job_name, meta)
             try:
                 from nester.sheet.dxf_out import write_all_sheets
                 written += write_all_sheets(result, out_dir, _slug(job_name))
-            except Exception:
-                pass
+            except Exception as e:
+                # Nested DXFs are the shop deliverable — never lose the reason.
+                warnings.append(f"nested DXF per sheet not written: {e}")
             artifacts = _upload_artifacts(written, out_prefix)
 
-    return {"mode": "sheet", "result": result_json, "artifacts": artifacts, "errors": errors}
+    return {"mode": "sheet", "result": result_json, "artifacts": artifacts,
+            "errors": errors, "warnings": warnings}

@@ -243,6 +243,37 @@ def _vertex_list_points(t: List[str]) -> List[Point]:
     return pts
 
 
+def check_straight(geo: TubeGeometry, profile_dims: Tuple[float, ...] | None, path: str) -> None:
+    """Raise if the measured cross-section can't plausibly be a straight tube
+    of the nominal profile (E2).
+
+    ``read_tube`` takes the bbox's longest axis as cut length, which is only
+    correct for a STRAIGHT tube — for a BENT one it silently returns the
+    chord. The two shorter bbox extents are the (measured) cross-section; a
+    straight tube's should match the nominal profile within modeling noise. A
+    bent 40x40 tube's minor extent balloons to hundreds of mm (the bend's
+    sweep), so the tolerance only needs to absorb noise, not real geometry.
+
+    ``profile_dims`` comes from ``profile.parse_profile_dims``: a single
+    diameter for round profiles (compared against both measured extents), or
+    ``(width, height)`` for square/rect. ``None`` means the filename profile
+    didn't parse into dims — skip the check (that's gap E5, out of scope).
+    """
+    if profile_dims is None:
+        return
+    measured = sorted(geo.cross_section, reverse=True)
+    nominal = [profile_dims[0], profile_dims[0]] if len(profile_dims) == 1 else sorted(profile_dims, reverse=True)
+    for m, n in zip(measured, nominal):
+        tol = max(0.10 * n, 2.0)
+        if m > n + tol:
+            raise ValueError(
+                f"{path}: measured cross-section "
+                f"{tuple(round(x, 1) for x in geo.cross_section)}mm exceeds the nominal "
+                f"profile dimensions {tuple(nominal)}mm (tolerance {tol:.1f}mm). "
+                f"This part appears bent/non-straight and cannot be nested as a straight tube."
+            )
+
+
 def _bbox_extents(points: List[Point]) -> List[float]:
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]

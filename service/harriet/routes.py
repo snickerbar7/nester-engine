@@ -140,13 +140,15 @@ def to_nest_response(native: Dict[str, Any]) -> Dict[str, Any]:
     if native["mode"] == "sheet":
         # The 2D result is the engine's own JSON — Harriet passes it through.
         return {"mode": "sheet", "result": native["result"],
-                "artifacts": to_artifacts(native["artifacts"]), "errors": native["errors"]}
+                "artifacts": to_artifacts(native["artifacts"]), "errors": native["errors"],
+                "warnings": native.get("warnings", [])}
     result = {
         "profiles": [to_profile_plan(p) for p in native["result"]["profiles"]],
         "barsTotal": native["result"]["bars_total"],
     }
     return {"mode": "tube", "unit": native["unit"], "result": result,
-            "artifacts": to_artifacts(native["artifacts"]), "errors": native["errors"]}
+            "artifacts": to_artifacts(native["artifacts"]), "errors": native["errors"],
+            "warnings": native.get("warnings", [])}
 
 
 # --------------------------------------------------------------------------- #

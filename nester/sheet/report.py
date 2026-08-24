@@ -79,15 +79,22 @@ def _part_base(name: str) -> str:
     return base
 
 
-def write_reports(result: NestResult, out_dir: str, job_name: str, meta: dict) -> List[str]:
-    """Write the nest JSON (always) and the cut-plan PDF (if reportlab). Returns paths."""
+def write_reports(
+    result: NestResult, out_dir: str, job_name: str, meta: dict, warnings: List[str] | None = None
+) -> List[str]:
+    """Write the nest JSON (always) and the cut-plan PDF (if reportlab). Returns paths.
+
+    ``warnings`` (e.g. "nested DXF-per-sheet not written: ...") is carried into
+    the JSON's ``warnings`` field so a caller that failed to produce some OTHER
+    artifact (E4) still surfaces it in the machine-readable output.
+    """
     os.makedirs(out_dir, exist_ok=True)
     slug = _slug(job_name)
     written: List[str] = []
 
     json_path = os.path.join(out_dir, f"{slug}_nido.json")
     with open(json_path, "w", encoding="utf-8") as fh:
-        json.dump(_as_dict(result, job_name, meta), fh, indent=2, ensure_ascii=False)
+        json.dump(_as_dict(result, job_name, meta, warnings), fh, indent=2, ensure_ascii=False)
     written.append(json_path)
 
     if _HAVE_REPORTLAB:
@@ -100,11 +107,12 @@ def write_reports(result: NestResult, out_dir: str, job_name: str, meta: dict) -
     return written
 
 
-def _as_dict(result: NestResult, job_name: str, meta: dict) -> dict:
+def _as_dict(result: NestResult, job_name: str, meta: dict, warnings: List[str] | None = None) -> dict:
     spec = result.spec
     return {
         "job": job_name,
         "generated": meta.get("generated", ""),
+        "warnings": list(warnings or []),
         "params": {
             "material": spec.material,
             "thickness": spec.thickness,

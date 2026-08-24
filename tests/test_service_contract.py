@@ -86,7 +86,7 @@ def test_harriet_nest_envelope_unchanged():
         "errors": [],
     }
     out = to_nest_response(native)
-    assert set(out) == {"mode", "unit", "result", "artifacts", "errors"}
+    assert set(out) == {"mode", "unit", "result", "artifacts", "errors", "warnings"}
     assert set(out["result"]) == {"profiles", "barsTotal"}
     assert out["result"]["barsTotal"] == 1
     assert out["artifacts"] == [{"key": "records/c/r/plan.pdf", "filename": "plan.pdf",
@@ -98,7 +98,7 @@ def test_harriet_sheet_nest_passes_engine_json_through():
               "artifacts": [], "errors": ["a.dxf: boom"]}
     out = to_nest_response(native)
     assert out == {"mode": "sheet", "result": {"job": "j", "totals": {"sheets": 2}},
-                   "artifacts": [], "errors": ["a.dxf: boom"]}
+                   "artifacts": [], "errors": ["a.dxf: boom"], "warnings": []}
 
 
 def test_harriet_extract_field_names_unchanged():

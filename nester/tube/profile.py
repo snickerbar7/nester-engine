@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+from typing import Tuple
 
 # square/rect tube: NxN(xN)   |   round tube: D## / OD##   (optional decimals),
 # plus an optional gauge/wall suffix like "_C18" — different wall = different
@@ -69,3 +70,30 @@ def profile_from_filename(path: str, pattern: str = DEFAULT_PROFILE_REGEX) -> st
 
 def _normalize(raw: str) -> str:
     return raw.replace("X", "x").lower()
+
+
+# Round profile: "d32" / "od25.4", optionally with a "_c##" gauge suffix.
+_ROUND_DIMS_RE = re.compile(r"^o?d(?P<diam>\d+(?:\.\d+)?)")
+# Square/rect profile: "40x40x2" / "50x30" (wall thickness, if present, is
+# NOT a cross-section extent, so it's dropped here).
+_RECT_DIMS_RE = re.compile(r"^(?P<a>\d+(?:\.\d+)?)x(?P<b>\d+(?:\.\d+)?)")
+
+
+def parse_profile_dims(profile: str) -> Tuple[float, ...] | None:
+    """Nominal cross-section dimensions encoded in a normalized profile key.
+
+    Round profiles (``d32`` / ``od25.4``) return a single-element tuple, the
+    diameter — compared against BOTH measured minor extents. Square/rect
+    profiles (``40x40x2``) return ``(width, height)`` (the wall thickness, if
+    present, isn't a cross-section extent and is ignored).
+
+    Returns ``None`` if ``profile`` doesn't match either shape — callers
+    should treat that as "can't check, skip" (gap E5), not an error.
+    """
+    m = _ROUND_DIMS_RE.match(profile)
+    if m:
+        return (float(m.group("diam")),)
+    m = _RECT_DIMS_RE.match(profile)
+    if m:
+        return (float(m.group("a")), float(m.group("b")))
+    return None

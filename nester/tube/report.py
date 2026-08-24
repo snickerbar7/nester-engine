@@ -77,8 +77,15 @@ def write_reports(
     out_dir: str,
     job_name: str,
     meta: Dict,
+    warnings: List[str] | None = None,
 ) -> List[str]:
-    """Write <job>_corte.json (always) and <job>_Plan_de_Corte.pdf (if reportlab)."""
+    """Write <job>_corte.json (always) and <job>_Plan_de_Corte.pdf (if reportlab).
+
+    ``warnings`` (e.g. "IGES nest-layout not written: ...") is carried into the
+    JSON's ``warnings`` field so a caller that failed to produce some OTHER
+    artifact (E4) still surfaces it in the machine-readable output, rather than
+    losing it once the job "completes".
+    """
     os.makedirs(out_dir, exist_ok=True)
     written: List[str] = []
     slug = _slug(job_name)
@@ -86,7 +93,7 @@ def write_reports(
 
     json_path = os.path.join(out_dir, f"{slug}_corte.json")
     with open(json_path, "w") as fh:
-        json.dump(_as_dict(results, job_name, meta), fh, indent=2)
+        json.dump(_as_dict(results, job_name, meta, warnings), fh, indent=2)
     written.append(json_path)
 
     if _HAVE_REPORTLAB:
@@ -136,11 +143,12 @@ def _color_for_lengths(r: ProfileResult) -> Dict[float, tuple]:
 # JSON
 # --------------------------------------------------------------------------- #
 
-def _as_dict(results: List[ProfileResult], job_name: str, meta: Dict) -> dict:
+def _as_dict(results: List[ProfileResult], job_name: str, meta: Dict, warnings: List[str] | None = None) -> dict:
     return {
         "job": job_name,
         "generated": meta.get("generated"),
         "params": {k: meta[k] for k in ("kerf", "front_trim", "back_trim") if k in meta},
+        "warnings": list(warnings or []),
         "totals": {
             "profiles": len(results),
             "stock_bars": sum(r.bar_count for r in results),

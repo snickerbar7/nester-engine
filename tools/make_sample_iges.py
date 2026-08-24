@@ -1,8 +1,8 @@
 """Generate minimal synthetic straight-tube IGES files for testing the parser.
 
-Each file holds a single Line entity (type 110) along X of the requested length.
-Not a real CAD export — just enough valid IGES to exercise the reader until we
-have the user's actual files. Usage:
+Each file holds one or more Line entities (type 110). Not a real CAD export —
+just enough valid IGES to exercise the reader until we have the user's actual
+files. Usage:
 
     python tools/make_sample_iges.py 40x40x2 1200 samples/bracket_40x40x2_A.igs
 """
@@ -10,6 +10,10 @@ have the user's actual files. Usage:
 from __future__ import annotations
 
 import sys
+from typing import List, Sequence, Tuple
+
+Point = Tuple[float, float, float]
+Segment = Tuple[Point, Point]
 
 
 def _line(data: str, section: str, seq: int) -> str:
@@ -23,10 +27,21 @@ def _pd_line(data: str, de_ptr: int, seq: int) -> str:
 
 
 def build(length_mm: float) -> str:
-    out = []
+    """A single straight Line entity along X, from (0,0,0) to (length,0,0)."""
+    return build_lines([((0.0, 0.0, 0.0), (length_mm, 0.0, 0.0))])
+
+
+def build_lines(segments: Sequence[Segment]) -> str:
+    """One Line entity (type 110) per (start, end) segment. Concatenated
+    segments (e.g. a straight run + a swung-out arm) let a test simulate a
+    BENT tube: the reader's bbox-longest-axis-as-length logic can't tell that
+    apart from a straight one by length alone, but the minor bbox extents
+    balloon — which is exactly what the E2 straightness check watches for.
+    """
+    out: List[str] = []
 
     # Start
-    out.append(_line("Synthetic straight tube sample.", "S", 1))
+    out.append(_line("Synthetic tube sample.", "S", 1))
 
     # Global: defaults for delimiters (leading ',,'), unit flag 2 = mm (param 14)
     params = [""] * 24
@@ -39,18 +54,20 @@ def build(length_mm: float) -> str:
         gseq += 1
         out.append(_line(gstr[i:i + 72], "G", gseq))
 
-    # Directory Entry for a Line (type 110), 2 records
-    de1 = "".join(f"{v:>8}" for v in [110, 1, 0, 0, 0, 0, 0, 0]) + "00000000"
-    de2 = "".join(f"{v:>8}" for v in [110, 0, 0, 1, 0, 0, 0]) + f"{'':>8}{0:>8}"
-    out.append(_line(de1[:72], "D", 1))
-    out.append(_line(de2[:72], "D", 2))
+    # Directory Entry + Parameter Data for each Line (type 110), one PD line each
+    n = len(segments)
+    for i, ((x1, y1, z1), (x2, y2, z2)) in enumerate(segments, start=1):
+        p_start = i
+        de1 = "".join(f"{v:>8}" for v in [110, p_start, 0, 0, 0, 0, 0, 0]) + "00000000"
+        de2 = "".join(f"{v:>8}" for v in [110, 0, 0, 1, 0, 0, 0]) + f"{'':>8}{0:>8}"
+        out.append(_line(de1[:72], "D", 2 * i - 1))
+        out.append(_line(de2[:72], "D", 2 * i))
 
-    # Parameter Data for the Line: from (0,0,0) to (length,0,0)
-    pd = f"110,0.,0.,0.,{length_mm:g},0.,0.;"
-    out.append(_pd_line(pd, de_ptr=1, seq=1))
+        pd = f"110,{x1:g},{y1:g},{z1:g},{x2:g},{y2:g},{z2:g};"
+        out.append(_pd_line(pd, de_ptr=2 * i - 1, seq=i))
 
     # Terminate: counts of S, G, D, P lines
-    term = f"{'S':>1}{1:>7}{'G':>1}{gseq:>7}{'D':>1}{2:>7}{'P':>1}{1:>7}"
+    term = f"{'S':>1}{1:>7}{'G':>1}{gseq:>7}{'D':>1}{2 * n:>7}{'P':>1}{n:>7}"
     out.append(_line(term, "T", 1))
 
     return "".join(out)

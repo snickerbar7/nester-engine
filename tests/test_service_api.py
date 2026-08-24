@@ -129,7 +129,7 @@ def test_harriet_nest_response_is_camelcase(client):
     body = client.post("/nest", headers=HARRIET, json={
         "files": TUBE_FILES, "stock_length": 6000, "kerf": 3, "back_trim": 300,
         "out_prefix": "records/co/r1/out"}).json()
-    assert set(body) == {"mode", "unit", "result", "artifacts", "errors"}
+    assert set(body) == {"mode", "unit", "result", "artifacts", "errors", "warnings"}
     assert body["unit"] == "mm"
     assert body["result"]["barsTotal"] == 1
     prof = body["result"]["profiles"][0]

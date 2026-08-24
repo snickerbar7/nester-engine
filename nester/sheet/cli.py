@@ -71,13 +71,25 @@ def main(argv: List[str] | None = None) -> int:
     if args.out:
         job_name = args.name or _default_job_name(args.inputs)
         out_dir = os.path.join(args.out, job_name)
-        files = write_reports(result, out_dir, job_name, _meta(args))
+        # Attempt the per-sheet DXF write BEFORE the JSON so a failure (E4)
+        # can be recorded as a warning IN the JSON, not silently dropped. A
+        # failure here must not abort the job — the cut-plan PDF + JSON stand.
+        out_warnings: List[str] = []
+        dxf_files: List[str] = []
         if not args.no_dxf:
             from .dxf_out import write_all_sheets
-            files += write_all_sheets(result, out_dir, _slug(job_name))
+            os.makedirs(out_dir, exist_ok=True)
+            try:
+                dxf_files = write_all_sheets(result, out_dir, _slug(job_name))
+            except Exception as e:
+                out_warnings.append(f"nested DXF-per-sheet not written: {e}")
+        files = write_reports(result, out_dir, job_name, _meta(args), warnings=out_warnings)
+        files += dxf_files
         print("\nWrote:")
         for f in files:
             print(f"  {f}")
+        for w in out_warnings:
+            print(f"  ! warning: {w}", file=sys.stderr)
     return 0
 
 
