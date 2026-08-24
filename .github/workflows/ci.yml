@@ -1,0 +1,27 @@
+# CI — the production gate.
+#
+# Branch policy (see CLAUDE.md "Shipping"): ONE branch. Local = dev/experiments;
+# any push to main IS a production deploy (Render auto-deploys this repo).
+# This workflow is the blocker: Render should be set to "wait for CI to pass"
+# (Settings -> Build & Deploy -> Auto-Deploy: After CI Checks Pass), so a red
+# suite never reaches the service Harriet and Harriet Nester call.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install deps (engine + service)
+        run: pip install -r requirements-service.txt
+      - name: Run test suite
+        run: python -m pytest -q

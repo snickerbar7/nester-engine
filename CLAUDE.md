@@ -246,6 +246,20 @@ If a file contains geometry types not in the list above, `read_tube` raises and
 sanity-check the first run's lengths against known part lengths (and the BOM if
 there is one) before trusting a job.
 
+## Shipping / branch policy (READ)
+
+**One branch. No staging.** `main` local = dev/experiments; **any push to
+`origin main` IS a production deploy** — Render auto-deploys this repo, and the
+deployed service is called in production by BOTH Harriet and Harriet Nester
+(the web product). Use the `/ship` skill to push: it gates on the full test
+suite, frozen-Harriet-contract safety, and docs being updated in the same push.
+Never push a red suite. CI (`.github/workflows/ci.yml`) runs the suite on every
+push; Render should be configured to wait for CI checks before deploying.
+
+New env vars must be added in Doppler before the deploy that reads them.
+Current service auth env: `NESTER_API_KEYS="client:token[:key_prefix]"`
+(comma-separated; legacy `NESTER_SERVICE_TOKEN` still = unscoped `harriet`).
+
 ## Dev
 
 ```bash
