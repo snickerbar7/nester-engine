@@ -3,6 +3,8 @@
   GET  /v1/health        -> liveness
   POST /v1/extract       -> geometry -> parts (tube or sheet; deterministic)
   POST /v1/nest          -> tube parts -> cut plan (+ artifacts to R2)
+  POST /v1/uploads       -> presigned PUT URLs, so web clients can put CAD
+                             files into R2 without holding R2 credentials
 
 Requests and responses are snake_case and name their units (`stock_length_mm`).
 Responses are the native `service.core.engine` shape, returned as-is: no
@@ -65,6 +67,19 @@ class NestRequest(BaseModel):
         None, description="key prefix to write artifacts under; omit to skip artifacts")
 
 
+class UploadFileRequest(BaseModel):
+    key: str = Field(..., description="object key (opaque to the service)")
+    content_type: str = Field(..., description="MIME type for the presigned PUT")
+
+
+class UploadRequest(BaseModel):
+    files: List[UploadFileRequest]
+
+
+UPLOAD_URL_EXPIRES_IN = 900
+MAX_UPLOAD_FILES = 50
+
+
 def _infiles(files: List[FileRef]) -> List[InFile]:
     return [InFile(key=f.key, filename=f.filename) for f in files]
 
@@ -125,3 +140,25 @@ def nest(req: NestRequest, client: Client = Depends(require_client)) -> Dict[str
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/uploads")
+def uploads(req: UploadRequest, client: Client = Depends(require_client)) -> Dict[str, Any]:
+    # Sync endpoints run in a threadpool; a prior harriet request on this thread
+    # may have left its caller bucket pair set. v1 always uses the env pair.
+    r2.caller_buckets.set(None)
+    files = req.files
+    if not files or len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(
+            status_code=422, detail=f"files must contain 1-{MAX_UPLOAD_FILES} entries")
+    for f in files:
+        if not f.content_type or not f.content_type.strip():
+            raise HTTPException(
+                status_code=422, detail=f"empty content_type for key {f.key!r}")
+    enforce_request_scope(client, [f.key for f in files])
+    return {"uploads": [
+        {"key": f.key,
+         "url": r2.presign_put(f.key, f.content_type, UPLOAD_URL_EXPIRES_IN),
+         "expires_in": UPLOAD_URL_EXPIRES_IN}
+        for f in files
+    ]}

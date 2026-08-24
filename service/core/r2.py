@@ -1,7 +1,8 @@
 """Cloudflare R2 access via the S3 API (boto3).
 
-R2 is S3-compatible. The service reads input CAD files by key and writes shop
-artifacts by key.
+R2 is S3-compatible. The service reads input CAD files by key, writes shop
+artifacts by key, and can hand out presigned PUT URLs so web clients can
+upload directly to R2 without ever holding R2 credentials themselves.
 
 **Object keys are OPAQUE.** The caller constructs every key and every output
 prefix; the service never builds one from domain concepts of its own and never
@@ -89,6 +90,16 @@ def bucket_for_key(key: str) -> str:
     if priv and key.startswith("records/"):
         return priv
     return bucket()
+
+
+def presign_put(key: str, content_type: str, expires_in: int = 900) -> str:
+    """Presigned PUT URL so a caller can upload a key directly to R2 without holding
+    R2 credentials (bucket resolved by key prefix, same as get/put_bytes)."""
+    return _client().generate_presigned_url(
+        "put_object",
+        Params={"Bucket": bucket_for_key(key), "Key": key, "ContentType": content_type},
+        ExpiresIn=expires_in,
+    )
 
 
 def get_bytes(key: str) -> bytes:

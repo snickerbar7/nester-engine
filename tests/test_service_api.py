@@ -197,3 +197,53 @@ def test_v1_extract_returns_native_shape(client):
     body = client.post("/v1/extract", json={"files": WEB_FILES}, headers=WEB).json()
     assert body["parts"][0]["length_mm"] == 302.0
     assert "length" not in body["parts"][0]
+
+
+# --- /v1/uploads ------------------------------------------------------------ #
+
+@pytest.fixture
+def presign_client(client, monkeypatch):
+    # boto3 presigning is a local computation (no network call), so real signing
+    # with dummy credentials is fine and exercises the actual boto3 code path.
+    monkeypatch.setenv("R2_ACCOUNT_ID", "acct123")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "AKIAFAKEKEYID")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "fakesecretkey")
+    monkeypatch.setenv("R2_BUCKET_NAME", "pub-bucket")
+    monkeypatch.delenv("R2_PRIVATE_BUCKET_NAME", raising=False)
+    from service.core import r2
+    r2._client.cache_clear()
+    yield client
+    r2._client.cache_clear()
+
+
+def test_v1_uploads_requires_auth(presign_client):
+    r = presign_client.post("/v1/uploads", json={
+        "files": [{"key": "web/u1/part.igs", "content_type": "model/iges"}]})
+    assert r.status_code == 401
+
+
+def test_v1_uploads_key_outside_client_prefix_is_403(presign_client):
+    r = presign_client.post("/v1/uploads", headers=WEB, json={
+        "files": [{"key": "records/co/r1/part.igs", "content_type": "model/iges"}]})
+    assert r.status_code == 403
+
+
+def test_v1_uploads_empty_files_is_422(presign_client):
+    r = presign_client.post("/v1/uploads", headers=WEB, json={"files": []})
+    assert r.status_code == 422
+
+
+def test_v1_uploads_happy_path(presign_client):
+    r = presign_client.post("/v1/uploads", headers=WEB, json={"files": [
+        {"key": "web/jobs/abc/in/part.igs", "content_type": "model/iges"},
+        {"key": "web/jobs/abc/in/other.dxf", "content_type": "image/vnd.dxf"},
+    ]})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["uploads"]) == 2
+    for entry, key in zip(body["uploads"], [
+            "web/jobs/abc/in/part.igs", "web/jobs/abc/in/other.dxf"]):
+        assert entry["key"] == key
+        assert entry["expires_in"] == 900
+        assert entry["url"].startswith("https://acct123.r2.cloudflarestorage.com/pub-bucket/")
+        assert key in entry["url"]
