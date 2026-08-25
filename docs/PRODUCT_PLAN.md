@@ -206,8 +206,21 @@ instant solves); 2D follows once A5/E1 land. Billing manual.
 **Phase 3 — 2D + polish.** Async jobs, sheet nesting in the UI, E3
 persistence, E5, calibre/catalog (E7, E11), cost line (E8). *(E9 done.)*
 
-**Phase 4 — Commercial.** Stripe MX, white-label PDF, plans — only after real
-usage. Anything quoting-shaped ships in Harriet instead.
+**Phase 4 — Commercial.** Stripe MX (account ready: acct Nester, CLI
+authenticated, official Stripe skills installed in the web repo). **Billing
+model decided 2026-08-24, measured against real AI cost ($0.134 USD list /
+~MX$2.5 per full job, 87% of input cache-served):**
+- Unit: **1 crédito = 1 anidado** (each run_nest). Conversation is free,
+  backstopped by a fair-use daily turn cap.
+- **Gratis:** 8 créditos/mes, full-quality deliverables, no watermarks.
+- **Taller: MX$499/mes**, 100 créditos/mes.
+- **Extra: 50 créditos = MX$149** (one-time packs, roll over while
+  subscribed). Card + OXXO + SPEI. Factura manual at first (Stripe MX has
+  no CFDI); PAC automation later.
+- Enforcement is honest and in-product: balance visible in the status bar,
+  HARRIET announces depletion in shop language, the nest gate refuses.
+Build order: after the 2D/async design round. White-label PDF stays a
+future paid differentiator. Anything quoting-shaped ships in Harriet.
 
 ### What NOT to build here, ever
 
