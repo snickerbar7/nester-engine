@@ -13,6 +13,11 @@
   POST   /v1/downloads   -> presigned GET URLs for the caller's own keys
                              (shop artifacts back out of R2)
 
+Every file reference carries an optional `sets` (juegos) multiplier: quantity is
+parsed from the filename, which a shop cannot rename, so `sets` is how it says
+"this drawing, 50 times" — effective qty = filename qty x sets, applied before
+nesting in both modes.
+
 Requests and responses are snake_case and name their units (`stock_length_mm`).
 Responses are the native `service.core.engine` shape, returned as-is: no
 per-client renaming lives here either.
@@ -30,7 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from nester.sheet.pack import ROTATION_MODES
-from nester.tube.profile import DEFAULT_PROFILE_REGEX, DEFAULT_QTY_REGEX
+from nester.tube.profile import DEFAULT_PROFILE_REGEX, DEFAULT_QTY_REGEX, MAX_SETS
 
 from . import jobs
 from ..core import engine, r2
@@ -58,6 +63,12 @@ TUBE_IS_SYNC = (
 class FileRef(BaseModel):
     key: str = Field(..., description="object key (opaque to the service)")
     filename: str = Field(..., description="original filename (profile+qty parsed from it)")
+    sets: int = Field(
+        1, ge=1, le=MAX_SETS,
+        description="JUEGOS — how many sets of this file to build. Effective "
+                    "quantity = qty parsed from the filename x sets "
+                    "(a '_2pz' file with sets=50 cuts 100 pieces). Applies to "
+                    f"both modes; 1..{MAX_SETS}, default 1.")
 
 
 class ExtractRequest(BaseModel):
@@ -144,7 +155,7 @@ MAX_UPLOAD_FILES = 50
 
 
 def _infiles(files: List[FileRef]) -> List[InFile]:
-    return [InFile(key=f.key, filename=f.filename) for f in files]
+    return [InFile(key=f.key, filename=f.filename, sets=f.sets) for f in files]
 
 
 def _resolve_mode(mode: str, files: List[InFile]) -> str:

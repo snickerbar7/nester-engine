@@ -23,11 +23,13 @@ from .packing import pack_all
 from .profile import (
     DEFAULT_PROFILE_REGEX,
     DEFAULT_QTY_REGEX,
+    MAX_SETS,
     ProfileParseError,
     normalize_profile,
     parse_profile_dims,
+    parse_sets_args,
     profile_from_filename,
-    quantity_from_filename,
+    resolve_qty,
 )
 from .report import write_reports
 
@@ -43,7 +45,12 @@ def main(argv: List[str] | None = None) -> int:
         return 2
 
     qty_regex = None if args.no_qty else args.qty_regex
-    parts, errors, cross_sections = _load_parts(paths, args.profile_regex, qty_regex)
+    sets = parse_sets(getattr(args, "sets", []))
+    for name in sets:
+        if not any(os.path.basename(p) == name or p == name for p in paths):
+            print(f"  ! --sets for '{name}' ignored: no such file in this job",
+                  file=sys.stderr)
+    parts, errors, cross_sections = _load_parts(paths, args.profile_regex, qty_regex, sets)
     for e in errors:
         print(f"  ! {e}", file=sys.stderr)
     if not parts:
@@ -164,6 +171,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="regex with a 'qty' group for pieces-per-file (e.g. _4pz)")
     p.add_argument("--no-qty", action="store_true",
                    help="treat every file as a single part (ignore qty in filename)")
+    p.add_argument("--sets", action="append", default=[], metavar="FILENAME=N",
+                   help="juegos: multiply that file's quantity by N (repeatable). "
+                        "'PIEZA_2pz.igs=50' -> 2 x 50 = 100 pieces to cut.")
     p.add_argument("--json", action="store_true", help="emit machine-readable JSON to stdout")
     p.add_argument("--out", metavar="DIR",
                    help="write the cut-plan PDF + JSON into DIR/<job-name>/")
@@ -202,8 +212,17 @@ def _expand_inputs(inputs: List[str]) -> List[str]:
 
 
 def _load_parts(
-    paths: List[str], profile_regex: str, qty_regex: str | None
+    paths: List[str],
+    profile_regex: str,
+    qty_regex: str | None,
+    sets: Dict[str, int] | None = None,
 ) -> tuple[List[Part], List[str], Dict[str, tuple]]:
+    """Read every file into Part copies.
+
+    ``sets`` is the juegos multiplier per file (keyed by path or basename): the
+    file contributes ``qty_from_name x sets`` copies, so demand — and therefore
+    the bars to buy — scales before the solver ever runs.
+    """
     parts: List[Part] = []
     errors: List[str] = []
     cross_sections: Dict[str, tuple] = {}
@@ -225,7 +244,7 @@ def _load_parts(
             errors.append(f"{name}: {e}")
             continue
         cross_sections.setdefault(profile, geo.cross_section)
-        qty = quantity_from_filename(path, qty_regex) if qty_regex else 1
+        _from_name, _sets, qty = resolve_qty(path, qty_regex, sets)
         if qty == 1:
             parts.append(Part(name=name, profile=profile, length=geo.cut_length))
         else:
@@ -260,6 +279,14 @@ def _build_specs(parts: List[Part], args: argparse.Namespace) -> Dict[str, Stock
             print(f"  ! remnants for profile '{profile}' ignored: not in this job",
                   file=sys.stderr)
     return specs
+
+
+def parse_sets(items: List[str]) -> Dict[str, int]:
+    """--sets FILENAME=N -> {filename: n}. Bad input aborts with the reason."""
+    try:
+        return parse_sets_args(items)
+    except ValueError as e:
+        raise SystemExit(str(e))
 
 
 def _parse_remnants(items: List[str]) -> Dict[str, List[ExtraStock]]:

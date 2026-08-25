@@ -24,9 +24,14 @@ from .model import FlatPart, NestResult, SheetSpec
 from .pack import ROTATION_MODES, NestError, nest
 from .report import _slug, _part_base, write_reports
 
-# quantity-from-filename is shared with the tube tool.
+# quantity-from-filename (and the juegos multiplier) are shared with the tube tool.
 try:
-    from nester.tube.profile import DEFAULT_QTY_REGEX, quantity_from_filename
+    from nester.tube.profile import (
+        DEFAULT_QTY_REGEX,
+        parse_sets_args,
+        quantity_from_filename,
+        resolve_qty,
+    )
 except Exception:  # pragma: no cover - keep nester.sheet usable standalone
     DEFAULT_QTY_REGEX = r"[_\-](?P<qty>\d+)\s*(?:pz|pcs|pza|x)\b"
 
@@ -34,6 +39,18 @@ except Exception:  # pragma: no cover - keep nester.sheet usable standalone
         import re
         m = re.search(pattern, os.path.splitext(os.path.basename(path))[0], re.IGNORECASE)
         return max(int(m.group("qty")), 1) if m else 1
+
+    def parse_sets_args(items) -> dict:
+        out = {}
+        for item in items or []:
+            key, _, val = item.rpartition("=")
+            out[key.strip()] = max(int(val), 1)
+        return out
+
+    def resolve_qty(path, pattern=DEFAULT_QTY_REGEX, sets=None):
+        qty = quantity_from_filename(path, pattern) if pattern else 1
+        n = max(int((sets or {}).get(os.path.basename(path), 1)), 1)
+        return qty, n, qty * n
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -45,7 +62,15 @@ def main(argv: List[str] | None = None) -> int:
         return 2
 
     sw, sh = _parse_sheet(args.sheet)
-    parts, errors, warnings = _load_parts(paths, None if args.no_qty else args.qty_regex)
+    try:
+        sets = parse_sets_args(getattr(args, "sets", []))
+    except ValueError as e:
+        raise SystemExit(str(e))
+    for name in sets:
+        if not any(os.path.basename(p) == name or p == name for p in paths):
+            print(f"  ! --sets for '{name}' ignored: no such file in this job", file=sys.stderr)
+    parts, errors, warnings = _load_parts(
+        paths, None if args.no_qty else args.qty_regex, sets)
     for e in errors:
         print(f"  ! {e}", file=sys.stderr)
     for w in warnings:
@@ -129,6 +154,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--qty-regex", default=DEFAULT_QTY_REGEX,
                    help="regex with a 'qty' group for pieces-per-file (e.g. _4pz)")
     p.add_argument("--no-qty", action="store_true", help="treat every file as a single part")
+    p.add_argument("--sets", action="append", default=[], metavar="FILENAME=N",
+                   help="juegos: multiply that file's quantity by N (repeatable). "
+                        "'PIEZA_2pz.dxf=50' -> 2 x 50 = 100 pieces to cut.")
     p.add_argument("--json", action="store_true", help="emit machine-readable JSON to stdout")
     p.add_argument("--out", metavar="DIR", help="write PDF + JSON + nested DXFs into DIR/<job>/")
     p.add_argument("--name", help="job name for the output folder + report title")
@@ -166,13 +194,18 @@ def _expand_inputs(inputs: List[str]) -> List[str]:
     return uniq
 
 
-def _load_parts(paths: List[str], qty_regex):
+def _load_parts(paths: List[str], qty_regex, sets=None):
+    """Read every DXF into FlatParts.
+
+    ``sets`` (juegos, keyed by path or basename) multiplies the filename-parsed
+    quantity of EVERY part in that file — a multi-part DXF scales as a set.
+    """
     parts: List[FlatPart] = []
     errors: List[str] = []
     warnings: List[str] = []
     for path in paths:
         name = os.path.basename(path)
-        qty = quantity_from_filename(path, qty_regex) if qty_regex else 1
+        _from_name, _sets, qty = resolve_qty(path, qty_regex, sets)
         try:
             file_parts = read_parts(path, qty=qty)
         except (DxfReadError, OSError) as e:

@@ -24,7 +24,13 @@ from . import r2  # object keys are opaque strings supplied by the caller
 from nester.tube.cli import _load_parts as _tube_load_parts
 from nester.tube.model import ExtraStock, ProfileResult, StockSpec
 from nester.tube.packing import pack_all
-from nester.tube.profile import DEFAULT_PROFILE_REGEX, DEFAULT_QTY_REGEX, normalize_profile
+from nester.tube.profile import (
+    DEFAULT_PROFILE_REGEX,
+    DEFAULT_QTY_REGEX,
+    normalize_profile,
+    quantity_from_filename as _quantity_from_filename,
+    resolve_qty as _resolve_qty,
+)
 from nester.tube.report import write_reports as _tube_write_reports, _slug
 
 # --- sheet pipeline (unchanged engine) ---
@@ -47,6 +53,11 @@ _STEP_EXTS = (".stp", ".step")
 class InFile:
     key: str
     filename: str
+    # JUEGOS: how many sets of this file the shop is building. Effective
+    # quantity = qty parsed from the filename x sets. Default 1 = today's
+    # behaviour, so the frozen Harriet contract (which never sends it) is
+    # byte-identical.
+    sets: int = 1
 
 
 def infer_mode(files: List[InFile]) -> str:
@@ -73,14 +84,28 @@ def _materialize(files: List[InFile], into: str) -> List[str]:
     return paths
 
 
+def _sets_map(files: List[InFile]) -> Dict[str, int]:
+    """{basename: sets} — the key the readers look a file up by (materialized
+    files keep their original name, which is what carries qty AND profile)."""
+    return {os.path.basename(f.filename) or "part": max(int(getattr(f, "sets", 1) or 1), 1)
+            for f in files}
+
+
+def _qty_from_name(filename: str, qty_regex: Optional[str]) -> int:
+    """Pieces the FILENAME claims, before the juegos multiplier. 1 when the
+    caller disabled filename quantities (`qty_regex: null`)."""
+    return _quantity_from_filename(filename, qty_regex) if qty_regex else 1
+
+
 # --------------------------------------------------------------------------- #
 # EXTRACT — intent-independent, deterministic (geometry in, parts out)
 # --------------------------------------------------------------------------- #
 
 def extract_tube(files: List[InFile], profile_regex: str, qty_regex: Optional[str]) -> Dict[str, Any]:
+    sets = _sets_map(files)
     with tempfile.TemporaryDirectory() as tmp:
         paths = _materialize(files, tmp)
-        parts, errors, _cross = _tube_load_parts(paths, profile_regex, qty_regex)
+        parts, errors, _cross = _tube_load_parts(paths, profile_regex, qty_regex, sets)
     # Aggregate the expanded Part copies back to {length, profile, qty, label}.
     agg: Dict[Tuple[str, float, str], int] = {}
     order: List[Tuple[str, float, str]] = []
@@ -91,8 +116,12 @@ def extract_tube(files: List[InFile], profile_regex: str, qty_regex: Optional[st
             agg[k] = 0
             order.append(k)
         agg[k] += 1
+    # `qty` stays the EFFECTIVE count (existing consumers keep working); the two
+    # new fields let a UI show its arithmetic: "2 del archivo x 50 juegos = 100".
     out_parts = [
-        {"label": label, "profile": profile, "qty": agg[k], "length_mm": length}
+        {"label": label, "profile": profile, "qty": agg[k], "length_mm": length,
+         "qty_from_name": _qty_from_name(label, qty_regex),
+         "sets": sets.get(label, 1)}
         for k in order
         for (label, length, profile) in [k]
     ]
@@ -121,15 +150,15 @@ def extract_sheet(
     because it multiplies the payload size, and a caller that only needs counts
     (the frozen Harriet contract) shouldn't pay for it.
     """
-    from nester.sheet.cli import quantity_from_filename  # shared qty parser
-
+    sets = _sets_map(files)
     parts_out: List[Dict[str, Any]] = []
     errors: List[str] = []
     with tempfile.TemporaryDirectory() as tmp:
         paths = _materialize(files, tmp)
         for path in paths:
             name = os.path.basename(path)
-            qty = quantity_from_filename(path, qty_regex) if qty_regex else 1
+            # A multi-part DXF: every part in the file is multiplied by sets.
+            qty_from_name, n_sets, qty = _resolve_qty(path, qty_regex, sets)
             try:
                 fps = _sheet_read_parts(path, qty=qty)
             except Exception as e:  # DxfReadError / OSError
@@ -139,7 +168,9 @@ def extract_sheet(
                 w, h = fp.size
                 entry: Dict[str, Any] = {
                     "label": fp.name,
-                    "qty": fp.qty,
+                    "qty": fp.qty,            # EFFECTIVE: qty_from_name x sets
+                    "qty_from_name": qty_from_name,
+                    "sets": n_sets,
                     "width_mm": round(w, 3),
                     "height_mm": round(h, 3),
                     "area_mm2": round(fp.area, 3),
@@ -256,7 +287,9 @@ def nest_tube(
 ) -> Dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmp:
         paths = _materialize(files, tmp)
-        parts, errors, cross = _tube_load_parts(paths, profile_regex, qty_regex)
+        # sets multiplies demand BEFORE packing: the bars to buy scale with it.
+        parts, errors, cross = _tube_load_parts(
+            paths, profile_regex, qty_regex, _sets_map(files))
         if not parts:
             raise ValueError("no readable parts: " + "; ".join(errors) if errors else "no parts")
         specs, stock_warnings = _build_specs(
@@ -388,14 +421,14 @@ def nest_sheet(
     and ``should_cancel`` are handed straight to the multi-sheet loop — the
     async jobs API uses them; the sync callers pass neither.
     """
-    from nester.sheet.cli import quantity_from_filename
-
+    sets = _sets_map(files)
     with tempfile.TemporaryDirectory() as tmp:
         paths = _materialize(files, tmp)
         parts = []
         errors: List[str] = []
         for path in paths:
-            qty = quantity_from_filename(path, qty_regex) if qty_regex else 1
+            # sets multiplies demand BEFORE nesting: sheets scale with it.
+            _from_name, _n_sets, qty = _resolve_qty(path, qty_regex, sets)
             try:
                 parts += _sheet_read_parts(path, qty=qty)
             except Exception as e:
@@ -407,6 +440,9 @@ def nest_sheet(
                          thickness=thickness, margin=margin, part_gap=gap)
         result = _sheet_nest(parts, spec, rotation=rotate, time_per_sheet=time_per_sheet,
                              seed=seed, progress=progress, should_cancel=should_cancel)
+        # Parts the nesting engine refused (degenerate contours) join the
+        # unreadable-file errors — same channel, already surfaced by the client.
+        errors += list(result.messages)
         meta = {"generated": "", "lang": lang, "rotation": rotate}
         result_json = _sheet_as_dict(result, job_name, meta)
         if include_contours:

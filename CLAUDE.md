@@ -40,6 +40,11 @@ IGES files ──▶ extract cut length ──▶ group by profile ──▶ pac
 - **Profile** is read from the **filename** via a configurable regex. Default
   matches `40x40x2`, `50X30X3`, `D32`, `OD25.4`. Mixed profiles per job are
   grouped and nested independently.
+- **Juegos (E22)**: quantity comes from the filename, which the shop can't
+  rename — so a per-file multiplier says how many sets to build: `--sets
+  FILENAME=N` (repeatable; `sets` on an API FileRef, 1–500). Effective qty =
+  filename qty × sets (`_2pz` × 50 juegos = 100 pieces), multiplied **before**
+  nesting so the bars to buy scale with it.
 - **Stock** = one full-bar (tramo) length per profile (global `--stock-length`,
   with optional `--stock PROFILE=MM` overrides).
 - **Retazos (E9)**: the shop's leftovers are extra stock. Pass them with
@@ -211,6 +216,9 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   nesting with real rotation. It solves **strip packing**; we wrap it in a greedy
   **multi-sheet** loop (fixed strip height = sheet height, harvest the block that
   fits the sheet width, roll the overflow to the next sheet).
+- **Juegos (E22)**: same multiplier as the tube tool — `--sets FILENAME=N`
+  (`sets` on an API FileRef) multiplies **every** part in that DXF, so a
+  multi-part file scales as one set; sheets are computed for the full count.
 - **Rotation** per `--rotate`: `free` / `grain` (0°,180°) / `fixed` (0°) / `ortho`.
   Grain-lock for brushed finish or bend-grain parts.
 - **Spacing**: `--margin` (edge) + `--gap` (part-to-part, keep ≥ kerf →
@@ -328,6 +336,13 @@ nothing is running); a **finished** job survives — poll
 checked **between sheets**, so the sheet in flight burns its `time_per_sheet`
 budget first. Upgrade path (jobs table in Postgres + a Render worker) is in the
 module docstring; the HTTP contract is written to survive it unchanged.
+
+**Juegos / sets (E22).** Every `/v1` FileRef takes an optional `sets` (int,
+1–500, default 1, 422 outside) on `extract`, `nest` and `jobs`, both modes:
+effective qty = filename qty × sets, multiplied before the solver runs.
+`/v1/extract` reports `qty_from_name` and `sets` next to the EFFECTIVE `qty`
+(unchanged meaning) so a UI can render "2 × 50 = 100". Harriet's contract has
+no `sets` and is byte-identical.
 
 **Real contours (2D).** `POST /v1/extract` with DXF files returns, per part,
 `contour: {outer: [[x,y],…], holes: [[[x,y],…],…]}` in mm — origin at the

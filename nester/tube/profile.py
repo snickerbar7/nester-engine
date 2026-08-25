@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Tuple
+from typing import Mapping, Optional, Tuple
 
 # square/rect tube: NxN(xN)   |   round tube: D## / OD##   (optional decimals),
 # plus an optional gauge/wall suffix like "_C18" — different wall = different
@@ -33,9 +33,81 @@ DEFAULT_PROFILE_REGEX = (
 # quantity per file, e.g. "_4pz" / "_8PZ" / "-2 pcs"
 DEFAULT_QTY_REGEX = r"[_\-](?P<qty>\d+)\s*(?:pz|pcs|pza|x)\b"
 
+# JUEGOS (sets) — a per-FILE multiplier on the filename-parsed quantity.
+#
+# The filename says how many pieces ONE set of the drawing carries
+# ("PIEZA_2pz.dxf" -> 2). It cannot say how many sets the shop is building: the
+# customer's file is not renameable, and a shop that needs 100 of a file that
+# says "_2pz" has no way to express it. So the multiplier is supplied
+# out-of-band (`sets` on an API FileRef, `--sets FILE=N` on the CLI) and is
+# NEVER parsed from the name:
+#
+#     effective qty = qty_from_name x sets     (2 pieces x 50 juegos = 100)
+#
+# It multiplies demand BEFORE nesting — raw material scales with it, which is
+# the whole point.
+MAX_SETS = 500
+
 
 class ProfileParseError(ValueError):
     pass
+
+
+def sets_for_path(path: str, sets: Optional[Mapping[str, int]] = None) -> int:
+    """The juegos multiplier for one file: keyed by full path, else by basename.
+
+    Basename is the practical key — the API materializes uploads under their
+    original filename, and that filename is what the user typed on ``--sets``.
+    """
+    if not sets:
+        return 1
+    raw = sets.get(path)
+    if raw is None:
+        raw = sets.get(os.path.basename(path))
+    if raw is None:
+        return 1
+    return max(int(raw), 1)
+
+
+def parse_sets_args(items) -> dict:
+    """``["PIEZA_2pz.igs=50", ...]`` -> ``{"PIEZA_2pz.igs": 50}``.
+
+    Shared by both CLIs (``--sets``, repeatable, mirroring ``--remnant``).
+    Raises :class:`ValueError` on a malformed or out-of-range entry; the CLIs
+    turn that into a ``SystemExit`` with the same message the API returns.
+    """
+    out: dict = {}
+    for item in items or []:
+        if "=" not in item:
+            raise ValueError(f"--sets expects FILENAME=N, got '{item}'")
+        key, val = item.rsplit("=", 1)
+        name = key.strip()
+        if not name:
+            raise ValueError(f"--sets expects FILENAME=N, got '{item}'")
+        try:
+            n = int(val.strip())
+        except ValueError:
+            raise ValueError(f"--sets {name}: N must be a whole number, got '{val}'")
+        if n < 1 or n > MAX_SETS:
+            raise ValueError(f"--sets {name}: N must be between 1 and {MAX_SETS}, got {n}")
+        out[name] = n
+    return out
+
+
+def resolve_qty(
+    path: str,
+    pattern: Optional[str] = DEFAULT_QTY_REGEX,
+    sets: Optional[Mapping[str, int]] = None,
+) -> Tuple[int, int, int]:
+    """``(qty_from_name, sets, effective_qty)`` for one file.
+
+    ``pattern=None`` means "ignore quantities in filenames" (the ``--no-qty``
+    flag / ``qty_regex: null``), which pins ``qty_from_name`` to 1 — sets still
+    applies, because it was supplied deliberately.
+    """
+    qty = quantity_from_filename(path, pattern) if pattern else 1
+    n = sets_for_path(path, sets)
+    return qty, n, qty * n
 
 
 def quantity_from_filename(path: str, pattern: str = DEFAULT_QTY_REGEX) -> int:

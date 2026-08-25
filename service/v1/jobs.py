@@ -100,7 +100,11 @@ LOST_MESSAGE = (
 
 @dataclass
 class SheetJobParams:
-    """Everything one sheet solve needs — the request, minus the HTTP."""
+    """Everything one sheet solve needs — the request, minus the HTTP.
+
+    ``files`` are :class:`InFile`s, so each carries its own ``sets`` (juegos)
+    multiplier straight through to the solve — nothing here needs to know.
+    """
 
     files: List[InFile]
     width: float
