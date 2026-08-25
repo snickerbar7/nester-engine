@@ -11,11 +11,12 @@ Nothing here knows about a specific client: contract packages adapt this shape.
 
 from __future__ import annotations
 
+import math
 import mimetypes
 import os
 import tempfile
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import r2  # object keys are opaque strings supplied by the caller
 
@@ -27,9 +28,15 @@ from nester.tube.profile import DEFAULT_PROFILE_REGEX, DEFAULT_QTY_REGEX, normal
 from nester.tube.report import write_reports as _tube_write_reports, _slug
 
 # --- sheet pipeline (unchanged engine) ---
+from nester.sheet.contour import (
+    DEFAULT_TOLERANCE as CONTOUR_TOLERANCE,
+    MAX_POINTS as CONTOUR_MAX_POINTS,
+    part_contour,
+    part_contour_with_origin,
+)
 from nester.sheet.dxf_read import read_parts as _sheet_read_parts
-from nester.sheet.model import SheetSpec
-from nester.sheet.pack import nest as _sheet_nest
+from nester.sheet.model import FlatPart, NestResult, SheetSpec
+from nester.sheet.pack import nest as _sheet_nest, transform as _sheet_transform
 from nester.sheet.report import write_reports as _sheet_write_reports, _as_dict as _sheet_as_dict
 
 _IGES_EXTS = (".igs", ".iges")
@@ -97,7 +104,23 @@ def extract_tube(files: List[InFile], profile_regex: str, qty_regex: Optional[st
     }
 
 
-def extract_sheet(files: List[InFile], qty_regex: Optional[str]) -> Dict[str, Any]:
+def extract_sheet(
+    files: List[InFile],
+    qty_regex: Optional[str],
+    *,
+    include_contours: bool = False,
+    contour_tolerance: float = CONTOUR_TOLERANCE,
+    contour_max_points: int = CONTOUR_MAX_POINTS,
+) -> Dict[str, Any]:
+    """Flat parts read from DXF: size, area, hole count — and, for clients that
+    DRAW the parts, the real silhouette.
+
+    ``include_contours`` adds ``contour`` = ``{"outer": [[x, y], ...], "holes":
+    [...]}`` per part, in mm, origin at the part's outer bbox min corner,
+    decimated to at most ``contour_max_points`` points per loop. It is opt-in
+    because it multiplies the payload size, and a caller that only needs counts
+    (the frozen Harriet contract) shouldn't pay for it.
+    """
     from nester.sheet.cli import quantity_from_filename  # shared qty parser
 
     parts_out: List[Dict[str, Any]] = []
@@ -114,14 +137,18 @@ def extract_sheet(files: List[InFile], qty_regex: Optional[str]) -> Dict[str, An
                 continue
             for fp in fps:
                 w, h = fp.size
-                parts_out.append({
+                entry: Dict[str, Any] = {
                     "label": fp.name,
                     "qty": fp.qty,
                     "width_mm": round(w, 3),
                     "height_mm": round(h, 3),
                     "area_mm2": round(fp.area, 3),
                     "holes": len(fp.holes),
-                })
+                }
+                if include_contours:
+                    entry["contour"] = part_contour(
+                        fp, tolerance=contour_tolerance, max_points=contour_max_points)
+                parts_out.append(entry)
     return {"mode": "sheet", "parts": parts_out, "errors": errors}
 
 
@@ -265,6 +292,74 @@ def nest_tube(
             "artifacts": artifacts, "errors": errors, "warnings": warnings}
 
 
+def sheet_part_index(
+    result: NestResult,
+    *,
+    tolerance: float = CONTOUR_TOLERANCE,
+    max_points: int = CONTOUR_MAX_POINTS,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Tuple[float, float]]]:
+    """Every UNIQUE part in a nest, with its silhouette — sent once, not per copy.
+
+    Returns ``(parts, origins)``: the JSON list (keyed by ``name``, which is what
+    a placement references) and, for placement maths, each part's contour
+    normalization offset.
+    """
+    seen: Dict[str, FlatPart] = {}
+    placed: Dict[str, int] = {}
+    for sheet in result.sheets:
+        for pl in sheet.placements:
+            seen.setdefault(pl.part.name, pl.part)
+            placed[pl.part.name] = placed.get(pl.part.name, 0) + 1
+    for part in result.unplaceable:
+        seen.setdefault(part.name, part)
+        placed.setdefault(part.name, 0)
+
+    parts: List[Dict[str, Any]] = []
+    origins: Dict[str, Tuple[float, float]] = {}
+    for name, part in seen.items():
+        contour, origin = part_contour_with_origin(
+            part, tolerance=tolerance, max_points=max_points)
+        origins[name] = origin
+        w, h = part.size
+        parts.append({
+            "name": name,
+            "qty_placed": placed.get(name, 0),
+            "width_mm": round(w, 3),
+            "height_mm": round(h, 3),
+            "area_mm2": round(part.area, 3),
+            "holes": len(part.holes),
+            "contour": contour,
+        })
+    return parts, origins
+
+
+def _annotate_placements(result_json: Dict[str, Any], result: NestResult,
+                         origins: Dict[str, Tuple[float, float]]) -> None:
+    """Add, per placement, everything a client needs to DRAW it without redoing
+    geometry: the contour's post-rotation translation and the placed bbox.
+
+    A placed copy is ``rotate(contour, rotation)`` translated by
+    ``contour_offset_mm`` — because the contour was normalized to the part's
+    bbox min corner, while the engine's ``x``/``y`` translate the RAW part
+    coordinates. Both are reported; only one of them is safe to use with the
+    contour, and it is this one.
+    """
+    for sheet_json, sheet in zip(result_json.get("sheets", []), result.sheets):
+        for pl_json, pl in zip(sheet_json.get("parts", []), sheet.placements):
+            ox, oy = origins.get(pl.part.name, (0.0, 0.0))
+            rot = math.radians(pl.rotation)
+            c, s = math.cos(rot), math.sin(rot)
+            pl_json["contour_offset_mm"] = [
+                round(ox * c - oy * s + pl.x, 3),
+                round(ox * s + oy * c + pl.y, 3),
+            ]
+            pts = _sheet_transform(pl.part.outer, pl.rotation, pl.x, pl.y)
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            pl_json["bbox_mm"] = [round(min(xs), 3), round(min(ys), 3),
+                                  round(max(xs), 3), round(max(ys), 3)]
+
+
 def nest_sheet(
     files: List[InFile],
     *,
@@ -281,7 +376,18 @@ def nest_sheet(
     job_name: str = "nest",
     lang: str = "es",
     out_prefix: Optional[str] = None,
+    include_contours: bool = False,
+    progress: Optional[Callable[[Any], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
+    """Nest flat parts onto sheets and write the shop artifacts.
+
+    ``include_contours`` adds a ``parts`` section (one entry per UNIQUE part,
+    with its decimated silhouette) to the result and, on every placement, the
+    ``contour_offset_mm`` / ``bbox_mm`` a client needs to draw it. ``progress``
+    and ``should_cancel`` are handed straight to the multi-sheet loop — the
+    async jobs API uses them; the sync callers pass neither.
+    """
     from nester.sheet.cli import quantity_from_filename
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -299,9 +405,14 @@ def nest_sheet(
 
         spec = SheetSpec(width=width, height=height, material=material,
                          thickness=thickness, margin=margin, part_gap=gap)
-        result = _sheet_nest(parts, spec, rotation=rotate, time_per_sheet=time_per_sheet, seed=seed)
+        result = _sheet_nest(parts, spec, rotation=rotate, time_per_sheet=time_per_sheet,
+                             seed=seed, progress=progress, should_cancel=should_cancel)
         meta = {"generated": "", "lang": lang, "rotation": rotate}
         result_json = _sheet_as_dict(result, job_name, meta)
+        if include_contours:
+            part_index, origins = sheet_part_index(result)
+            result_json["parts"] = part_index
+            _annotate_placements(result_json, result, origins)
 
         artifacts: List[Dict[str, Any]] = []
         warnings: List[str] = []

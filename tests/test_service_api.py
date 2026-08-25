@@ -260,6 +260,62 @@ def test_v1_extract_returns_native_shape(client):
     assert "length" not in body["parts"][0]
 
 
+# --- sheet extract: real contours for clients that DRAW the parts ----------- #
+
+def _plate_dxf_bytes(tmp_path):
+    """A 200x120 plate with two round holes, in the Fusion layer convention."""
+    import ezdxf
+    doc = ezdxf.new(setup=True)
+    doc.units = 4  # mm
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(0, 0), (200, 0), (200, 120), (0, 120)], close=True,
+                       dxfattribs={"layer": "OUTER_PROFILES"})
+    msp.add_circle((50, 60), 12, dxfattribs={"layer": "INTERIOR_PROFILES"})
+    msp.add_circle((150, 60), 12, dxfattribs={"layer": "INTERIOR_PROFILES"})
+    path = tmp_path / "plate.dxf"
+    doc.saveas(path)
+    return path.read_bytes()
+
+
+@pytest.fixture
+def sheet_client(monkeypatch, tmp_path):
+    """Real DXF bytes served from a fake R2, real reader, real contours."""
+    monkeypatch.delenv("NESTER_SERVICE_TOKEN", raising=False)
+    monkeypatch.setenv("NESTER_API_KEYS", KEYS)
+    data = _plate_dxf_bytes(tmp_path)
+    from service.core import r2
+    monkeypatch.setattr(r2, "get_bytes", lambda key: data)
+    return TestClient(app)
+
+
+SHEET_FILES = [{"key": "web/u1/plate.dxf", "filename": "plate.dxf"}]
+
+
+def test_v1_extract_sheet_ships_the_real_contour_with_holes(sheet_client):
+    body = sheet_client.post("/v1/extract", headers=WEB,
+                             json={"files": SHEET_FILES}).json()
+    part = body["parts"][0]
+    assert part["width_mm"] == 200.0 and part["height_mm"] == 120.0
+    assert part["holes"] == 2
+    contour = part["contour"]
+    # a real silhouette, origin at the part's bbox min corner, bounded in size
+    assert set(contour) == {"outer", "holes"}
+    assert len(contour["outer"]) == 4                    # the plate is a rectangle
+    assert min(p[0] for p in contour["outer"]) == 0.0
+    assert min(p[1] for p in contour["outer"]) == 0.0
+    assert len(contour["holes"]) == 2
+    for hole in contour["holes"]:
+        assert 3 <= len(hole) <= 200                     # decimated, hard cap
+
+
+def test_harriet_extract_sheet_stays_free_of_contours(sheet_client):
+    """The frozen contract is byte-identical: it never grew a contour field."""
+    body = sheet_client.post("/extract", headers=HARRIET, json={
+        "files": [{"key": "records/co/plate.dxf", "filename": "plate.dxf"}]}).json()
+    assert body["mode"] == "sheet"
+    assert set(body["parts"][0]) == {"label", "qty", "width", "height", "area", "holes"}
+
+
 # --- /v1/uploads ------------------------------------------------------------ #
 
 @pytest.fixture

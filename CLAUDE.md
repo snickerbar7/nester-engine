@@ -225,6 +225,17 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   --out output --name <job> --lang es
 ```
 
+- **Progress / cancel** (additive; the CLI passes neither): `pack.nest()` takes
+  `progress=cb` — called with a `NestProgress(sheets_done,
+  sheets_total_estimate, parts_placed, parts_total,
+  last_sheet_utilization_pct)` after **each sheet is solved** — and
+  `should_cancel=fn`, checked **between sheets**, which raises `NestCancelled`
+  carrying the partial `NestResult`. `sheets_total_estimate` really is an
+  estimate: the multi-sheet loop can't know the total up front, so it's
+  projected from net part area landed per sheet vs area still queued. Mid-sheet
+  interruption is impossible — one spyrrow solve is an opaque, time-budgeted
+  call. The async jobs API is the only caller.
+
 MVP limits: one material/thickness per job; holes are drawn/preserved but not
 nested-into (engine has no part-in-hole support); remnants reported as leftover
 area, not tracked as reusable inventory; nesting is stochastic within `--time`
@@ -244,10 +255,12 @@ area, not tracked as reusable inventory; nesting is stochastic within `--time`
 | **Solid** STEP/IGES output (real part bodies) | `solid_nest.py` (runs under `.venv-cad`, OpenCASCADE) |
 | **Flat (2D)** — data model (FlatPart, SheetSpec, Placement, NestResult) | `nester/sheet/model.py` |
 | DXF reader (contours + holes, layer-classified) | `nester/sheet/dxf_read.py` |
-| Irregular nester (spyrrow wrapper + multi-sheet fill) | `nester/sheet/pack.py` |
+| Irregular nester (spyrrow wrapper + multi-sheet fill, progress/cancel) | `nester/sheet/pack.py` |
+| Part silhouettes for the API (decimation, holes, origin) | `nester/sheet/contour.py` |
 | PDF + JSON output | `nester/sheet/report.py` |
 | Nested DXF-per-sheet output | `nester/sheet/dxf_out.py` |
 | CLI | `nester/sheet/cli.py` (`python -m nester.sheet`) |
+| **Service** — async sheet jobs (registry, executor, R2 record) | `service/v1/jobs.py` |
 | Synthetic IGES generator (tests) | `tools/make_sample_iges.py` |
 | Sample files | `samples/` |
 | Job outputs | `output/<job-name>/` |
@@ -280,9 +293,50 @@ keys: Harriet (frozen compat contract at `/extract` `/nest` `/health`) and
 **Harriet Nester**, the AI-operated nesting web product
 (https://harriet-nester.vercel.app, repo `snickerbar7/harriet-nester`,
 local `~/Documents/harriet-nester`). Neutral contract under `/v1`:
-`health` · `extract` · `nest` (tube sync; 2D → 501 pending async jobs) ·
-`uploads` / `downloads` (presigned PUT/GET, caller-constructed keys,
-prefix-scoped). Product plan + engine roadmap: `docs/PRODUCT_PLAN.md`.
+`health` · `extract` · `nest` (tube, **sync**; mode=sheet → 501 pointing at
+jobs) · `jobs` (sheet, **async** — see below) · `uploads` / `downloads`
+(presigned PUT/GET, caller-constructed keys, prefix-scoped). Product plan +
+engine roadmap: `docs/PRODUCT_PLAN.md`.
+
+**Async jobs (E1/A5) — 2D only.** A tube nest is instant (FFD) so it stays on
+`POST /v1/nest`. A sheet nest is minutes, so it's a job:
+
+```
+POST   /v1/jobs          -> 202 {job_id, status:"queued", out_prefix, job_record_key}
+GET    /v1/jobs/{id}     -> {job_id, status, progress{sheets_done,
+                             sheets_total_estimate, parts_placed, parts_total,
+                             elapsed_s}, result?, artifacts?, errors, warnings, error?}
+DELETE /v1/jobs/{id}     -> {job_id, status:"cancelled", pending, detail}
+```
+
+Body = the `/v1/nest` envelope + sheet stock (`sheet_width_mm`,
+`sheet_height_mm`, `material`, `thickness_mm`, `margin_mm`, `gap_mm`,
+`rotate`, `time_per_sheet_s`, `seed`), `mode` must resolve to sheet, and
+`out_prefix` is **required** (artifacts *and* the job record land under it).
+Statuses: `queued · running · done · error · cancelled · lost`.
+
+The shape of the implementation is dictated by the deployment: **one Render
+instance, no database** (`service/v1/jobs.py` — read its docstring before
+changing anything). In-process `ThreadPoolExecutor` (2 concurrent solves) +
+an in-memory registry + a durable `<out_prefix>/_job.json` in R2 written on
+every transition and every finished sheet. Consequences, all deliberate:
+a restart **mid-solve loses the run** → `GET` answers `"lost"` with a message
+telling the client to re-submit (it never claims `running` for something
+nothing is running); a **finished** job survives — poll
+`GET /v1/jobs/{id}?out_prefix=<prefix>` and it's restored from R2; cancel is
+checked **between sheets**, so the sheet in flight burns its `time_per_sheet`
+budget first. Upgrade path (jobs table in Postgres + a Render worker) is in the
+module docstring; the HTTP contract is written to survive it unchanged.
+
+**Real contours (2D).** `POST /v1/extract` with DXF files returns, per part,
+`contour: {outer: [[x,y],…], holes: [[[x,y],…],…]}` in mm — origin at the
+part's bbox min corner, Douglas-Peucker-decimated (0.2 mm, hard cap 200 points
+per loop). The nest result carries the same contours **once per unique part**
+under `result.parts[]`, and every placement adds `contour_offset_mm` (translate
+the rotated contour by this — `x`/`y` translate the RAW part coordinates, which
+is NOT the same thing) plus `bbox_mm`. That's what lets the web nest view draw
+true silhouettes with holes instead of rectangles. Contours are opt-in in the
+engine (`include_contours=`), so the frozen Harriet responses are unchanged.
 
 ## Shipping / branch policy (READ)
 

@@ -19,12 +19,20 @@ Rotation is honored per part via ``allowed_orientations`` (None = free,
 (0,180) = grain-locked, (0,) = fixed). Part-to-part spacing maps to spyrrow's
 ``min_items_separation``; the sheet edge margin is handled by shrinking the
 usable rectangle and offsetting placements back out by the margin.
+
+**Progress and cancellation** (optional, additive — the CLI passes neither):
+``nest(..., progress=cb, should_cancel=fn)`` calls ``cb(NestProgress)`` once per
+completed sheet and consults ``fn()`` between sheets. There is no mid-sheet
+interruption: one spyrrow solve is an opaque, time-budgeted call, so a cancel
+lands after the sheet in flight finishes its ``time_per_sheet`` budget. Cancel
+raises :class:`NestCancelled`, which carries the sheets solved so far.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .model import FlatPart, NestResult, Placement, Point, SheetLayout, SheetSpec
 
@@ -43,6 +51,50 @@ class NestError(RuntimeError):
     pass
 
 
+class NestCancelled(NestError):
+    """Raised when ``should_cancel()`` returned True between sheets.
+
+    ``partial`` holds the sheets already solved — never silently discarded, so a
+    caller can still show (or keep) the work that was paid for.
+    """
+
+    def __init__(self, partial: NestResult, message: str = "nesting cancelled") -> None:
+        super().__init__(message)
+        self.partial = partial
+
+
+@dataclass(frozen=True)
+class NestProgress:
+    """One progress tick: the state after a sheet finished solving.
+
+    ``sheets_total_estimate`` is exactly that — an ESTIMATE. The multi-sheet
+    loop cannot know the total up front (each solve is stochastic), so it is
+    projected from the net part area placed per sheet so far against the area
+    still queued. It is monotonically >= ``sheets_done`` and can move in either
+    direction as the real density becomes known.
+    """
+
+    sheets_done: int
+    sheets_total_estimate: int
+    parts_placed: int
+    parts_total: int              # placeable demand (unplaceable parts excluded)
+    last_sheet_utilization_pct: float
+
+
+ProgressCallback = Callable[[NestProgress], None]
+
+
+def _estimate_total_sheets(sheets_done: int, placed_area: float,
+                           remaining_area: float) -> int:
+    """Project the sheet total from the average net area landed per sheet."""
+    if remaining_area <= 0:
+        return sheets_done
+    per_sheet = placed_area / sheets_done if sheets_done else 0.0
+    if per_sheet <= 0:
+        return sheets_done + 1
+    return sheets_done + max(1, math.ceil(remaining_area / per_sheet))
+
+
 def nest(
     parts: Sequence[FlatPart],
     spec: SheetSpec,
@@ -51,12 +103,19 @@ def nest(
     time_per_sheet: int = 4,
     seed: int = 0,
     max_sheets: int = 1000,
+    progress: Optional[ProgressCallback] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> NestResult:
     """Nest ``parts`` onto sheets of ``spec``. One stock group (material/thickness).
 
     ``rotation`` is a key of :data:`ROTATION_MODES` (the job-wide default; a part
     may override via its own ``allowed_orientations``). ``time_per_sheet`` is the
     per-solve compute budget in seconds — more time, better density.
+
+    ``progress`` is called with a :class:`NestProgress` after each sheet is
+    solved; ``should_cancel`` is consulted before each sheet and raises
+    :class:`NestCancelled` (carrying the partial result) when it returns True.
+    Both are optional and change nothing about the layout produced.
     """
     try:
         from spyrrow import Item, StripPackingConfig, StripPackingInstance
@@ -88,10 +147,16 @@ def nest(
         remaining[pid] = part.qty
         orient[pid] = allowed
 
+    parts_total = sum(remaining.values())  # placeable demand
+
     sheet_index = 0
     while any(v > 0 for v in remaining.values()):
         if sheet_index >= max_sheets:  # pragma: no cover - runaway guard
             raise NestError(f"exceeded max_sheets={max_sheets}; aborting.")
+        if should_cancel is not None and should_cancel():
+            # Between sheets is the only safe interruption point: a spyrrow solve
+            # is one opaque call with its own time budget.
+            raise NestCancelled(result)
 
         items = [
             Item(pid, list(catalog[pid].outer), demand=remaining[pid],
@@ -127,6 +192,19 @@ def nest(
             remaining[pid] -= n
         result.sheets.append(layout)
         sheet_index += 1
+
+        if progress is not None:
+            placed_area = result.total_part_area
+            remaining_area = sum(n * catalog[pid].area
+                                 for pid, n in remaining.items() if n > 0)
+            progress(NestProgress(
+                sheets_done=len(result.sheets),
+                sheets_total_estimate=_estimate_total_sheets(
+                    len(result.sheets), placed_area, remaining_area),
+                parts_placed=sum(s.part_count for s in result.sheets),
+                parts_total=parts_total,
+                last_sheet_utilization_pct=round(layout.utilization * 100, 2),
+            ))
 
     return result
 

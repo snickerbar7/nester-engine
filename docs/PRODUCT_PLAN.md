@@ -71,7 +71,7 @@ prefix. Same URL for both callers.
 | A2 | Keep `/nest` + `/extract` as Harriet compat shim over the same internals. | Harriet keeps working untouched. |
 | A3 | Per-client API keys (`NESTER_API_KEYS="harriet:tok1,web:tok2"`) → scoped R2 prefix per client. | Service must know who's calling; neither client can read the other's files. |
 | A4 | Service treats object keys/prefixes as opaque; callers construct them. Delete Harriet's key scheme from `r2.py` docs. | Keeps caller domain concepts out. |
-| A5 | Async job API in `/v1` (`POST /v1/jobs` → 202, `GET /v1/jobs/{id}`). | 2D solves run minutes; can't sit behind a web request. Tube jobs are instant and MAY stay sync in v1. |
+| A5 ✅ | Async job API in `/v1`. | **DONE** — `POST /v1/jobs` → 202, `GET /v1/jobs/{id}` (status · progress · result · artifacts), `DELETE` to cancel. Tube stays sync on `/v1/nest`; mode=sheet there 501s and points here. |
 
 ---
 
@@ -85,7 +85,7 @@ be confidently wrong.
 
 | # | Gap | Fix | Effort |
 |---|-----|-----|--------|
-| E1 | 2D `/nest` is synchronous (minutes of solve). | A5 async jobs; background worker; job row in Postgres. | M |
+| E1 ✅ | 2D `/nest` is synchronous (minutes of solve). | **DONE** — A5 jobs API. Sized to the real deployment (one Render instance, **no DB**): ThreadPoolExecutor (2 concurrent solves) + in-memory registry + durable `<out_prefix>/_job.json` in R2. `pack.nest()` gained a per-sheet progress callback and a between-sheets cancel check. A restart mid-solve is reported as `lost` (client re-submits); a **finished** job is restored from R2 via `?out_prefix=`. Postgres job table + Render worker is the documented upgrade path, and the HTTP contract survives it unchanged. | M |
 | E2 | Bent tubes silently return chord length as cut length. | Compare measured cross-section vs filename profile; minor extents exceed nominal → not straight → **raise**. | **S** |
 | E3 | 2D nesting is wall-clock stochastic; re-runs give different sheet counts. | Persist the nest result as source of truth; re-nest only as an explicit new revision. | S |
 | E4 | `except Exception: pass` around IGES-nest and DXF-per-sheet writes → missing deliverables with no explanation. | Return reason in `warnings[]`; AI must surface it. | **S** |
@@ -156,7 +156,7 @@ hook); a clear statement of what happens to their files.
 |---------|--------|------|
 | Frontend + AI | Next.js on **Vercel** (`nester-web`) | Streaming chat, auth. |
 | Engine service | **Existing Render deployment** (this repo) | Shared with Harriet — same URL, per-client keys (A3). Split only if load ever demands it. |
-| Jobs/worker | Render background worker | For E1/A5 (2D). Tube can launch sync. |
+| Jobs/worker | **In-process on the web service** (today) → Render background worker (when scale demands) | E1/A5 shipped in-process: no DB to add, no second service to pay for. Trade-off (documented in `service/v1/jobs.py`): a restart mid-solve loses the run, and this cannot scale to >1 instance. |
 | DB | **Neon Postgres** | Users, jobs, params, results, revisions, catalog. |
 | Files | **Cloudflare R2** — separate bucket (or prefix) from Harriet | Enforced by A3/A4. |
 | Secrets | Doppler | Add a `nester-web` project. |
@@ -192,19 +192,32 @@ hook); a clear statement of what happens to their files.
 > implement deltas → promote snapshot. Next engine contracts, in order:
 > angle/bisel detection (design negotiates 45° ends), E8 weight (unblocks
 > peso/kg across UI+PDF), mixed placas (E13), STEP (E12), 2D async (E1/A5).
+>
+> **2D async landed (E1/A5), 2026-08-24.** The engine side of sheet nesting is
+> now callable from the web product: `POST /v1/jobs` (202) · `GET /v1/jobs/{id}`
+> (status · progress · result · artifacts) · `DELETE /v1/jobs/{id}` (cancel),
+> with `nester/sheet/pack.py` reporting progress per finished sheet and checking
+> a cancel flag between sheets. `POST /v1/extract` and the nest result now carry
+> **real part contours** (outer + holes, decimated, ≤200 pts/loop), so the
+> WorkspaceLamina / ResultadosLamina screens can draw true silhouettes and the
+> CALCULANDO state has real numbers behind it (`sheets_done`,
+> `sheets_total_estimate`, `parts_placed`, `parts_total`, `elapsed_s`, plus the
+> per-sheet utilization the chips show). Remaining app-side work: wire the poll
+> loop, the cancel button and the SVG nest view. Next engine contracts, in
+> order: angle/bisel detection, E8 weight, mixed placas (E13), STEP (E12).
 
 **Phase 0 — Boundary (days).** A1–A4 + second API key on the existing Render
-service. A5 can slip if launch is tube-first.
+service. A5 slipped past launch (tube-first) and landed 2026-08-24. ✅
 
 **Phase 1 — Trust minimum (days).** E2 + E4 first (small), then E6. Gate on
 letting a stranger run a job.
 
 **Phase 2 — nester-web MVP (week).** New repo: Clerk auth, Neon, R2 upload,
 AI intake loop, two-pane UI, results page. **Tube-only at launch** (sync,
-instant solves); 2D follows once A5/E1 land. Billing manual.
+instant solves); 2D follows once A5/E1 land — they have. Billing manual.
 
-**Phase 3 — 2D + polish.** Async jobs, sheet nesting in the UI, E3
-persistence, E5, calibre/catalog (E7, E11), cost line (E8). *(E9 done.)*
+**Phase 3 — 2D + polish.** ~~Async jobs~~ ✅ (E1/A5), sheet nesting in the UI,
+E3 persistence, E5, calibre/catalog (E7, E11), cost line (E8). *(E9 done.)*
 
 **Phase 4 — Commercial.** Stripe MX (account ready: acct Nester, CLI
 authenticated, official Stripe skills installed in the web repo). **Billing
