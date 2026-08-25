@@ -339,6 +339,13 @@ is NOT the same thing) plus `bbox_mm`. That's what lets the web nest view draw
 true silhouettes with holes instead of rectangles. Contours are opt-in in the
 engine (`include_contours=`), so the frozen Harriet responses are unchanged.
 
+## Design rounds (canvas -> code)
+
+The product UI is designed in Claude Design and lands as handoff folders.
+The full loop — diff vs the web repo's `design/`, staging, agent briefs,
+gates, promotion — is the `/design-round` skill in this repo. `design/` in
+`~/Documents/harriet-nester` always equals what the app implements.
+
 ## Shipping / branch policy (READ)
 
 **One branch. No staging.** `main` local = dev/experiments; **any push to
