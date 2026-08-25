@@ -40,6 +40,33 @@ LIMITATIONS — read before relying on this
 4. **Scale is one instance.** Two instances behind a load balancer would not see
    each other's registries. Don't scale out on this design.
 
+WHAT A SHEET SOLVE NOW COSTS (read with limitation 3 above)
+-----------------------------------------------------------
+`minimize_sheets` (default TRUE) makes one job several full solves, not one.
+The engine re-nests under a ceiling on how many NEW sheets it may buy and lowers
+that ceiling while the job stays feasible; each attempt is its own multi-sheet
+walk. Consequences for this module, all of them deliberate:
+
+  * **elapsed time is a small multiple of the greedy time.** Typical jobs settle
+    in 2-4 attempts; `sheet_search_budget_s` caps the whole search in wall clock
+    and `max_new_sheets` caps how far it will look. Neither can fail a job — on
+    either limit the best FEASIBLE nest found comes back with
+    `result.totals.search.capped = true`, and if nothing was feasible at all the
+    engine falls back to the unbounded greedy walk.
+  * **`progress.sheets_done` restarts at zero on each attempt.** That is not the
+    solve going backwards, so `progress` carries `attempt` and
+    `new_sheet_ceiling` alongside it. A client that draws a bar must key it to
+    the attempt, and `sheets_total_estimate` is now genuinely bounded (a ceiling
+    is a real limit, not a projection) instead of only projected from density.
+  * **cancel is still checked between sheets, and now also between attempts.**
+    The sheet in flight still burns its `time_per_sheet` budget first, and
+    `NestCancelled` carries the best complete nest found so far rather than the
+    partial sheet stack of whichever attempt happened to be running.
+
+`kerf_mm` rides the request but never reaches the solver: it is reported back on
+`result.params.kerf_mm` so a client can check `gap_mm` against it. Kerf
+compensation is the CAM's job and the engine does not do it.
+
 UPGRADE PATH (when any of the above starts hurting)
 ---------------------------------------------------
 Move the registry into a ``jobs`` table in Postgres (Neon is already the product
@@ -124,6 +151,16 @@ class SheetJobParams:
     nest_in_holes: bool = False
     min_remnant: float = 0.0
     density: Optional[float] = None
+    # How hard to look for the FEWEST new sheets. `minimize_sheets` off is the
+    # old greedy walk (a faster answer, not a better one); the other three bound
+    # the search so one request cannot monopolise a worker. `kerf` is REPORTED
+    # only -- kerf compensation stays the CAM's job, so it never reaches the
+    # solver, it only rides through to result.params.kerf_mm.
+    minimize_sheets: bool = True
+    max_new_sheets: int = 40
+    search_budget_s: float = 0.0
+    min_hole_side: float = 30.0
+    kerf: float = 0.0
     qty_regex: Optional[str] = None
     job_name: str = "nest"
     lang: str = "es"
@@ -146,6 +183,11 @@ class Job:
     sheets_total_estimate: int = 0
     parts_placed: int = 0
     parts_total: int = 0
+    # Which pass of the sheet-count search is reporting. A second attempt
+    # restarts `sheets_done` at zero, so a client drawing a progress bar has to
+    # be told that is a NEW pass and not the solve going backwards.
+    attempt: int = 1
+    new_sheet_ceiling: Optional[int] = None
     result: Optional[Dict[str, Any]] = None
     artifacts: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
@@ -182,6 +224,8 @@ def to_body(job: Job) -> Dict[str, Any]:
             "parts_placed": job.parts_placed,
             "parts_total": job.parts_total,
             "elapsed_s": round(job.elapsed_s, 2),
+            "attempt": job.attempt,
+            "new_sheet_ceiling": job.new_sheet_ceiling,
         },
         "errors": list(job.errors),
         "warnings": list(job.warnings),
@@ -211,6 +255,8 @@ def _from_body(body: Dict[str, Any]) -> Job:
         sheets_total_estimate=int(prog.get("sheets_total_estimate", 0) or 0),
         parts_placed=int(prog.get("parts_placed", 0) or 0),
         parts_total=int(prog.get("parts_total", 0) or 0),
+        attempt=int(prog.get("attempt", 1) or 1),
+        new_sheet_ceiling=prog.get("new_sheet_ceiling"),
         result=body.get("result"),
         artifacts=list(body.get("artifacts") or []),
         errors=list(body.get("errors") or []),
@@ -316,7 +362,8 @@ def lost_body(job_id: str) -> Dict[str, Any]:
         "status": LOST,
         "mode": "sheet",
         "progress": {"sheets_done": 0, "sheets_total_estimate": 0,
-                     "parts_placed": 0, "parts_total": 0, "elapsed_s": 0.0},
+                     "parts_placed": 0, "parts_total": 0, "elapsed_s": 0.0,
+                     "attempt": 0, "new_sheet_ceiling": None},
         "errors": [],
         "warnings": [],
         "error": LOST_MESSAGE,
@@ -369,6 +416,9 @@ def _run(job: Job) -> None:
         job.sheets_total_estimate = p.sheets_total_estimate
         job.parts_placed = p.parts_placed
         job.parts_total = p.parts_total
+        # Additive, and inert when the search is off (attempt 1, no ceiling).
+        job.attempt = getattr(p, "attempt", 1)
+        job.new_sheet_ceiling = getattr(p, "new_sheet_ceiling", None)
         _touch(job)
         _persist(job)
 
@@ -380,6 +430,9 @@ def _run(job: Job) -> None:
             time_per_sheet=p.time_per_sheet, seed=p.seed,
             extra_sheets=p.extra_sheets, nest_in_holes=p.nest_in_holes,
             min_remnant=p.min_remnant, density=p.density,
+            minimize_sheets=p.minimize_sheets, max_new_sheets=p.max_new_sheets,
+            search_budget_s=p.search_budget_s, min_hole_side=p.min_hole_side,
+            kerf=p.kerf,
             qty_regex=p.qty_regex,
             job_name=p.job_name, lang=p.lang, out_prefix=p.out_prefix,
             include_contours=True,
@@ -404,6 +457,7 @@ def _run(job: Job) -> None:
     totals = (job.result or {}).get("totals") or {}
     job.sheets_done = int(totals.get("sheets", job.sheets_done) or 0)
     job.sheets_total_estimate = job.sheets_done
+    job.new_sheet_ceiling = ((totals.get("search") or {}).get("ceiling_used"))
     job.parts_placed = int(totals.get("parts_placed", job.parts_placed) or 0)
     job.parts_total = max(job.parts_total, job.parts_placed)
     job.finished_at = time.time()

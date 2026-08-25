@@ -38,7 +38,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from nester.materials import find_material, known_materials
-from nester.sheet.pack import ROTATION_MODES
+from nester.sheet.pack import (
+    DEFAULT_MAX_NEW_SHEETS, DEFAULT_MIN_HOLE_SIDE, ROTATION_MODES,
+)
 from nester.tube.profile import DEFAULT_PROFILE_REGEX, DEFAULT_QTY_REGEX, MAX_SETS
 
 from . import jobs
@@ -93,6 +95,12 @@ class ExtraStockRef(BaseModel):
 # A sanity bound on the retazo rack, not a solver limit: a request carrying more
 # offcuts than this is a mistake upstream, and each one is a sheet to solve.
 MAX_EXTRA_SHEETS = 200
+
+# Bounds on the sheet-count search. Neither is an engine limit — they exist so a
+# typo ("max_new_sheets": 100000) cannot turn one request into an afternoon of
+# solving on a two-worker box.
+MAX_NEW_SHEETS_LIMIT = 200
+MAX_SEARCH_BUDGET_S = 1800
 
 
 class ExtraSheetRef(BaseModel):
@@ -176,6 +184,32 @@ class JobRequest(NestRequest):
                     "know. Omit and it is resolved from `material` (see "
                     "GET /v1/materials); with neither, the result simply carries "
                     "no weights — the service never invents a density.")
+    minimize_sheets: bool = Field(
+        True,
+        description="search for the FEWEST new sheets this job fits in, rather "
+                    "than walking greedily until the parts run out. On by "
+                    "default: sheet mode has only this product's own clients, "
+                    "and Harriet's frozen surface never reaches it. Set false "
+                    "for the old greedy loop — a faster answer, not a better one.")
+    max_new_sheets: int = Field(
+        DEFAULT_MAX_NEW_SHEETS, ge=1, le=MAX_NEW_SHEETS_LIMIT,
+        description="ceiling the search will never look past. Past it the greedy "
+                    "answer comes back with result.totals.search.capped = true — "
+                    "a job is never failed for the search running out of road.")
+    sheet_search_budget_s: int = Field(
+        0, ge=0, le=MAX_SEARCH_BUDGET_S,
+        description="wall-clock cap in seconds for the WHOLE search (not per "
+                    "attempt). 0 = unbounded. On expiry the best FEASIBLE nest "
+                    "found so far is returned, flagged capped.")
+    min_hole_side_mm: float = Field(
+        DEFAULT_MIN_HOLE_SIDE, ge=0,
+        description="shortest side a void must have before the top-up pass will "
+                    "nest into it. A bolt hole is not usable surface.")
+    kerf_mm: float = Field(
+        0.0, ge=0,
+        description="the machine's kerf. REPORTED back on result.params.kerf_mm so "
+                    "a client can check gap_mm against it; the engine never "
+                    "applies kerf compensation — that stays the CAM's job.")
 
 
 class UploadFileRequest(BaseModel):
@@ -408,6 +442,9 @@ def create_job(req: JobRequest, client: Client = Depends(require_client)) -> Dic
         gap=req.gap_mm, rotate=req.rotate, time_per_sheet=req.time_per_sheet_s,
         seed=req.seed, extra_sheets=extra_sheets, nest_in_holes=req.nest_in_holes,
         min_remnant=req.min_remnant_mm, density=req.density_kg_m3,
+        minimize_sheets=req.minimize_sheets, max_new_sheets=req.max_new_sheets,
+        search_budget_s=float(req.sheet_search_budget_s),
+        min_hole_side=req.min_hole_side_mm, kerf=req.kerf_mm,
         qty_regex=req.qty_regex, job_name=req.job_name,
         lang=req.lang, out_prefix=req.out_prefix,
     ))

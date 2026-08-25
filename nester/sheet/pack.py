@@ -39,19 +39,31 @@ raises :class:`NestCancelled`, which carries the sheets solved so far.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, replace
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from .holes import nest_into_holes
+from .holes import DEFAULT_MIN_HOLE_SIDE, nest_into_free_area, nest_into_holes
 from .model import (
-    NEW_SHEET, ExtraSheet, FlatPart, Leftover, NestResult, Placement, Point,
-    SheetLayout, SheetSpec, polygon_area, transform,
+    NEW_SHEET, REMNANT_JOB_ENDED, REMNANT_NO_FIT, REMNANT_TOO_SMALL,
+    ExtraSheet, FlatPart, Leftover, NestResult, Placement, Point,
+    SearchInfo, SheetLayout, SheetSpec, polygon_area, transform,
 )
 
 __all__ = [
     "nest", "transform", "validate_part", "reclaimable_rectangle",
     "NestError", "NestCancelled", "NestProgress", "ROTATION_MODES",
+    "DEFAULT_MAX_NEW_SHEETS", "DEFAULT_MIN_HOLE_SIDE", "MAX_SEARCH_ATTEMPTS",
 ]
+
+#: Ceiling on how many NEW sheets the search will ever consider buying. Not a
+#: solver limit — a runaway guard, and the point past which "just tell me the
+#: greedy answer" is the honest thing to do.
+DEFAULT_MAX_NEW_SHEETS = 40
+
+#: How many full re-solves the search may spend. Each attempt costs roughly one
+#: sheet-count worth of solve time, so this is a wall-clock budget in disguise.
+MAX_SEARCH_ATTEMPTS = 6
 
 # Named rotation policies -> allowed orientation angles (degrees). None = free.
 ROTATION_MODES: Dict[str, Optional[Tuple[float, ...]]] = {
@@ -115,8 +127,15 @@ class NestProgress:
     ``sheets_total_estimate`` is exactly that — an ESTIMATE. The multi-sheet
     loop cannot know the total up front (each solve is stochastic), so it is
     projected from the net part area placed per sheet so far against the area
-    still queued. It is monotonically >= ``sheets_done`` and can move in either
-    direction as the real density becomes known.
+    still queued. Under a ceiling it gets better than a projection: the ceiling
+    is a real bound on how many new sheets this attempt can still open, and the
+    estimate is the tighter of the two. It is always >= ``sheets_done`` and can
+    move in either direction as the real density becomes known.
+
+    ``attempt`` / ``new_sheet_ceiling`` describe WHICH pass of the sheet-count
+    search is reporting: a second attempt restarts ``sheets_done`` at zero, so a
+    client that draws a progress bar needs to know that is a new pass and not a
+    regression. Both are additive, and both are inert when the search is off.
     """
 
     sheets_done: int
@@ -124,6 +143,8 @@ class NestProgress:
     parts_placed: int
     parts_total: int              # placeable demand (unplaceable parts excluded)
     last_sheet_utilization_pct: float
+    attempt: int = 1
+    new_sheet_ceiling: Optional[int] = None
 
 
 ProgressCallback = Callable[[NestProgress], None]
@@ -151,6 +172,10 @@ def nest(
     extra_sheets: Sequence[ExtraSheet] = (),
     nest_in_holes: bool = False,
     min_remnant: float = 0.0,
+    minimize_sheets: bool = True,
+    max_new_sheets: int = DEFAULT_MAX_NEW_SHEETS,
+    search_budget_s: float = 0.0,
+    min_hole_side: float = DEFAULT_MIN_HOLE_SIDE,
     progress: Optional[ProgressCallback] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> NestResult:
@@ -174,10 +199,20 @@ def nest(
     ``min_remnant`` (mm) is the shortest side worth reclaiming; above zero, each
     sheet reports the rectangle still left on it as a retazo candidate.
 
+    ``minimize_sheets`` (default on) searches for the LOWEST number of new
+    sheets the job can be done in, instead of walking greedily until the parts
+    run out. See :func:`_search` for what that costs and why the greedy walk
+    could not answer the question. ``max_new_sheets`` bounds the search,
+    ``search_budget_s`` gives it a wall-clock cap (0 = none), and
+    ``min_hole_side`` (mm) is the shortest side a void must have before the
+    top-up pass will even look at it. Passing ``minimize_sheets=False`` restores
+    the old greedy loop exactly.
+
     ``progress`` is called with a :class:`NestProgress` after each sheet is
-    solved; ``should_cancel`` is consulted before each sheet and raises
-    :class:`NestCancelled` (carrying the partial result) when it returns True.
-    Both are optional and change nothing about the layout produced.
+    solved; ``should_cancel`` is consulted before each sheet and between search
+    attempts, and raises :class:`NestCancelled` (carrying the best result so
+    far) when it returns True. Both are optional and change nothing about the
+    layout produced.
     """
     try:
         from spyrrow import Item, StripPackingConfig, StripPackingInstance
@@ -204,12 +239,15 @@ def nest(
             continue                      # smaller than its own margins
         stock_dims.append((_s.usable_width, _s.usable_height))
     margin = spec.margin
-    result = NestResult(spec=spec)
 
-    # Index parts and split off any that can't fit a single usable sheet.
+    # Index parts and split off any that can't fit a single usable sheet. This
+    # is per-job, not per-attempt: it depends only on the geometry and the stock
+    # on offer, so every attempt starts from the same verdict.
     catalog: Dict[str, FlatPart] = {}
-    remaining: Dict[str, int] = {}
+    base_remaining: Dict[str, int] = {}
     orient: Dict[str, Optional[Tuple[float, ...]]] = {}
+    invalid: List[Tuple[FlatPart, str]] = []
+    oversize: List[FlatPart] = []
     for i, part in enumerate(parts):
         pid = str(i)
         allowed = part.allowed_orientations if part.allowed_orientations is not None else job_orient
@@ -217,164 +255,368 @@ def nest(
         # -level unwrap, not an exception), so it must never reach the solver.
         reason = validate_part(part)
         if reason is not None:
-            result.invalid.append((part, reason))
+            invalid.append((part, reason))
             continue
         if not any(_fits_sheet(part, uw_, uh_, allowed) for uw_, uh_ in stock_dims):
-            result.unplaceable.append(part)
+            oversize.append(part)
             continue
         catalog[pid] = part
-        remaining[pid] = part.qty
+        base_remaining[pid] = part.qty
         orient[pid] = allowed
 
-    if result.invalid and not catalog and not result.unplaceable:
+    if invalid and not catalog and not oversize:
         raise NestError(
             "ninguna pieza tiene geometría utilizable para anidar: "
-            + "; ".join(result.messages)
+            + "; ".join(msg for _p, msg in invalid)
         )
 
-    parts_total = sum(remaining.values())  # placeable demand
+    parts_total = sum(base_remaining.values())  # placeable demand
     gap = spec.part_gap or 0.0
 
     # Retazo rack: smallest first, so the big offcuts stay free for the big
     # parts that have nowhere else to go. Each is popped at most once.
     pool: List[ExtraSheet] = sorted(extra_sheets, key=lambda e: e.area)
-    pool_pos = 0
 
-    sheet_index = 0
-    while any(v > 0 for v in remaining.values()):
-        if sheet_index >= max_sheets:  # pragma: no cover - runaway guard
-            raise NestError(f"exceeded max_sheets={max_sheets}; aborting.")
-        if should_cancel is not None and should_cancel():
-            # Between sheets is the only safe interruption point: a spyrrow solve
-            # is one opaque call with its own time budget.
-            raise NestCancelled(result)
+    def _new_result() -> NestResult:
+        r = NestResult(spec=spec)
+        r.invalid = list(invalid)
+        r.unplaceable = list(oversize)
+        return r
 
-        # --- pick this sheet's stock: a retazo while any is left, else a new sheet
-        remnant: Optional[ExtraSheet] = None
-        stock = spec
-        source = NEW_SHEET
-        if pool_pos < len(pool):
-            remnant = pool[pool_pos]
-            try:
-                stock = spec.resized(remnant.width, remnant.height)
-            except ValueError:
-                # Smaller than the margins it would have to carry — unusable as
-                # stock, but still a real piece: leave it on the rack.
-                result.remnants_unused.append(remnant)
-                pool_pos += 1
-                continue
-            source = remnant.label
+    # ----------------------------------------------------------------- #
+    # One attempt: the multi-sheet walk under a ceiling on NEW sheets
+    # ----------------------------------------------------------------- #
 
-        uw, uh = stock.usable_width, stock.usable_height
-        layout = SheetLayout(index=sheet_index, spec=stock, source=source)
+    def _pack_with_budget(
+        budget: Optional[int], attempt: int = 1
+    ) -> Tuple[NestResult, Dict[str, int]]:
+        """Nest under a ceiling of ``budget`` new sheets (None = unbounded).
 
-        # Only parts that fit THIS stock may drive the solve. On a new sheet that
-        # is everything (already prefiltered); on a retazo it is the subset that
-        # fits, which also keeps the strip-height guard from being dominated by a
-        # part this piece could never hold.
-        live = [pid for pid in remaining
-                if remaining[pid] > 0 and _fits_sheet(catalog[pid], uw, uh, orient[pid])]
+        The stock sequence is: every seeded retazo (smallest first), then at
+        most ``budget`` new sheets. When the ceiling is reached the walk STOPS
+        and hands back what is still owed, instead of opening sheet
+        ``budget + 1``. An empty leftover map means the attempt was feasible.
+        """
+        result = _new_result()
+        remaining = dict(base_remaining)
+        pool_pos = 0
+        new_used = 0
+        rack_used = 0
+        sheet_index = 0
 
-        if not live and remnant is None:
-            # A new sheet holds nothing that is left, and the rack is spent — so
-            # what remains was only ever placeable on an offcut that is now
-            # gone. Report it as unplaceable (never silently dropped) rather
-            # than opening empty sheets forever.
-            for pid, n in remaining.items():
-                if n > 0:
-                    result.unplaceable.append(replace(catalog[pid], qty=n))
-                    remaining[pid] = 0
-            break
+        while any(v > 0 for v in remaining.values()):
+            if sheet_index >= max_sheets:  # pragma: no cover - runaway guard
+                raise NestError(f"exceeded max_sheets={max_sheets}; aborting.")
+            if should_cancel is not None and should_cancel():
+                # Between sheets is the only safe interruption point: a spyrrow
+                # solve is one opaque call with its own time budget.
+                raise NestCancelled(result)
 
-        if live:
-            # The engine seeds its strip from the queued area; too little area on
-            # a tall strip and the separation offset empties it (Rust panic). Pick
-            # a strip height that cannot trip it — or skip the engine entirely.
-            items_area = sum(remaining[pid] * catalog[pid].outer_area for pid in live)
-            min_h = max(_min_presentable_height(catalog[pid], orient[pid]) for pid in live)
-            strip_h = _safe_strip_height(items_area, uh, gap, min_h)
+            # --- pick this sheet's stock: a retazo while any is left, else new
+            remnant: Optional[ExtraSheet] = None
+            stock = spec
+            source = NEW_SHEET
+            if pool_pos < len(pool):
+                remnant = pool[pool_pos]
+                try:
+                    stock = spec.resized(remnant.width, remnant.height)
+                except ValueError:
+                    # Smaller than the margins it would have to carry — unusable
+                    # as stock, but still a real piece: leave it on the rack.
+                    result.remnants_unused.append(remnant)
+                    result.remnant_reasons[remnant.label] = REMNANT_TOO_SMALL
+                    pool_pos += 1
+                    continue
+                source = remnant.label
+            elif budget is not None and new_used >= budget:
+                # The ceiling, reached. Everything still owed goes back to the
+                # caller as demand — this attempt was infeasible, not failed.
+                break
 
-            if strip_h is None:
-                _shelf_fill(layout, catalog, remaining, orient, uw, uh, margin, gap)
-            else:
-                items = [
-                    Item(pid, list(catalog[pid].outer), demand=remaining[pid],
-                         allowed_orientations=(list(orient[pid]) if orient[pid] is not None else None))
-                    for pid in live
-                ]
-                config = StripPackingConfig(
-                    min_items_separation=(spec.part_gap or None),
-                    total_computation_time=max(int(time_per_sheet), 1),
-                    seed=seed + sheet_index,
-                )
-                solution = _solve_strip(
-                    lambda: StripPackingInstance(f"sheet{sheet_index}", strip_h, items), config,
-                    spec=stock, rotation=rotation, items=len(items),
-                    copies=sum(remaining[pid] for pid in live),
-                    strip_height=strip_h, sheet_index=sheet_index,
-                )
+            uw, uh = stock.usable_width, stock.usable_height
+            layout = SheetLayout(index=sheet_index, spec=stock, source=source)
 
-                harvested: Dict[str, int] = {}
-                for pi in solution.placed_items:
-                    part = catalog[pi.id]
-                    tx, ty = pi.translation
-                    maxx = _placed_max_x(part.outer, pi.rotation, tx)
-                    if maxx <= uw + _EPS:
-                        layout.placements.append(
-                            Placement(part=part, x=tx + margin, y=ty + margin,
-                                      rotation=pi.rotation)
-                        )
-                        harvested[pi.id] = harvested.get(pi.id, 0) + 1
+            # Only parts that fit THIS stock may drive the solve. On a new sheet
+            # that is everything (already prefiltered); on a retazo it is the
+            # subset that fits, which also keeps the strip-height guard from
+            # being dominated by a part this piece could never hold.
+            live = [pid for pid in remaining
+                    if remaining[pid] > 0 and _fits_sheet(catalog[pid], uw, uh, orient[pid])]
 
-                for pid, n in harvested.items():
-                    remaining[pid] -= n
+            if not live and remnant is None:
+                # A new sheet holds nothing that is left, and the rack is spent
+                # — so what remains was only ever placeable on an offcut that is
+                # now gone. Report it as unplaceable (never silently dropped)
+                # rather than opening empty sheets forever.
+                for pid, n in remaining.items():
+                    if n > 0:
+                        result.unplaceable.append(replace(catalog[pid], qty=n))
+                        remaining[pid] = 0
+                break
 
-        # --- E15: reclaim the holes the strip packer could not see.
-        if nest_in_holes and layout.placements:
-            nest_into_holes(layout, catalog, remaining, orient, gap)
+            if live:
+                # The engine seeds its strip from the queued area; too little
+                # area on a tall strip and the separation offset empties it
+                # (Rust panic). Pick a strip height that cannot trip it — or
+                # skip the engine entirely.
+                items_area = sum(remaining[pid] * catalog[pid].outer_area for pid in live)
+                min_h = max(_min_presentable_height(catalog[pid], orient[pid]) for pid in live)
+                strip_h = _safe_strip_height(items_area, uh, gap, min_h)
 
-        if not layout.placements:
-            if remnant is not None:
-                # Nothing left fits this offcut. Do not burn it on an empty
-                # sheet — it goes back on the rack and the job moves on.
-                result.remnants_unused.append(remnant)
-                pool_pos += 1
-                continue
-            # New sheet and still nothing: the dense packing oriented everything
-            # past the sheet width. Force one part on so the job progresses.
-            _force_single(layout, catalog, remaining, orient, uw, uh, margin, gap)
+                if strip_h is None:
+                    _shelf_fill(layout, catalog, remaining, orient, uw, uh, margin, gap)
+                else:
+                    items = [
+                        Item(pid, list(catalog[pid].outer), demand=remaining[pid],
+                             allowed_orientations=(list(orient[pid]) if orient[pid] is not None else None))
+                        for pid in live
+                    ]
+                    config = StripPackingConfig(
+                        min_items_separation=(spec.part_gap or None),
+                        total_computation_time=max(int(time_per_sheet), 1),
+                        seed=seed + sheet_index,
+                    )
+                    solution = _solve_strip(
+                        lambda: StripPackingInstance(f"sheet{sheet_index}", strip_h, items), config,
+                        spec=stock, rotation=rotation, items=len(items),
+                        copies=sum(remaining[pid] for pid in live),
+                        strip_height=strip_h, sheet_index=sheet_index,
+                    )
+
+                    harvested: Dict[str, int] = {}
+                    for pi in solution.placed_items:
+                        part = catalog[pi.id]
+                        tx, ty = pi.translation
+                        maxx = _placed_max_x(part.outer, pi.rotation, tx)
+                        if maxx <= uw + _EPS:
+                            layout.placements.append(
+                                Placement(part=part, x=tx + margin, y=ty + margin,
+                                          rotation=pi.rotation)
+                            )
+                            harvested[pi.id] = harvested.get(pi.id, 0) + 1
+
+                    for pid, n in harvested.items():
+                        remaining[pid] -= n
+
+            # --- E15: reclaim the holes the strip packer could not see.
+            if nest_in_holes and layout.placements:
+                nest_into_holes(layout, catalog, remaining, orient, gap, min_hole_side)
+            # --- and the space it left plain empty. Appends only, so a sheet
+            # can never come out worse for it; see nester/sheet/holes.py for
+            # why the engine itself cannot be asked to do this.
+            if minimize_sheets and layout.placements:
+                nest_into_free_area(
+                    layout, catalog, remaining, orient, gap,
+                    (margin, margin, stock.width - margin, stock.height - margin),
+                    min_hole_side)
+
             if not layout.placements:
-                raise NestError(
-                    f"no cupo ninguna pieza en una lámina de "
-                    f"{spec.width:g}×{spec.height:g} mm con margen {spec.margin:g} mm "
-                    f"y separación {gap:g} mm."
-                )
-            if nest_in_holes:
-                nest_into_holes(layout, catalog, remaining, orient, gap)
+                if remnant is not None:
+                    # Nothing left fits this offcut. Do not burn it on an empty
+                    # sheet — it goes back on the rack and the job moves on.
+                    result.remnants_unused.append(remnant)
+                    result.remnant_reasons[remnant.label] = REMNANT_NO_FIT
+                    pool_pos += 1
+                    continue
+                # New sheet and still nothing: the dense packing oriented
+                # everything past the sheet width. Force one part on so the job
+                # progresses.
+                _force_single(layout, catalog, remaining, orient, uw, uh, margin, gap)
+                if not layout.placements:
+                    raise NestError(
+                        f"no cupo ninguna pieza en una lámina de "
+                        f"{spec.width:g}×{spec.height:g} mm con margen {spec.margin:g} mm "
+                        f"y separación {gap:g} mm."
+                    )
+                if nest_in_holes:
+                    nest_into_holes(layout, catalog, remaining, orient, gap, min_hole_side)
 
-        if remnant is not None:
-            pool_pos += 1
-        layout.leftover = reclaimable_rectangle(layout, gap, min_remnant)
-        result.sheets.append(layout)
-        sheet_index += 1
+            if remnant is not None:
+                pool_pos += 1
+                rack_used += 1
+            else:
+                new_used += 1
+            layout.leftover = reclaimable_rectangle(layout, gap, min_remnant)
+            result.sheets.append(layout)
+            sheet_index += 1
 
-        if progress is not None:
-            placed_area = result.total_part_area
-            remaining_area = sum(n * catalog[pid].area
-                                 for pid, n in remaining.items() if n > 0)
-            progress(NestProgress(
-                sheets_done=len(result.sheets),
-                sheets_total_estimate=_estimate_total_sheets(
-                    len(result.sheets), placed_area, remaining_area),
-                parts_placed=sum(s.part_count for s in result.sheets),
-                parts_total=parts_total,
-                last_sheet_utilization_pct=round(layout.utilization * 100, 2),
-            ))
+            if progress is not None:
+                placed_area = result.total_part_area
+                remaining_area = sum(n * catalog[pid].area
+                                     for pid, n in remaining.items() if n > 0)
+                projected = _estimate_total_sheets(
+                    len(result.sheets), placed_area, remaining_area)
+                if budget is not None:
+                    # A ceiling is a REAL bound, not a projection: this attempt
+                    # will never open more than the rack it has touched plus the
+                    # sheets it is allowed to buy.
+                    projected = min(projected, rack_used + budget)
+                progress(NestProgress(
+                    sheets_done=len(result.sheets),
+                    sheets_total_estimate=max(len(result.sheets), projected),
+                    parts_placed=sum(s.part_count for s in result.sheets),
+                    parts_total=parts_total,
+                    last_sheet_utilization_pct=round(layout.utilization * 100, 2),
+                    attempt=attempt,
+                    new_sheet_ceiling=budget,
+                ))
 
-    # The job finished before the rack did — whatever is left was never opened
-    # and is still the shop's to use.
-    result.remnants_unused.extend(pool[pool_pos:])
-    return result
+        # The job finished before the rack did — whatever is left was never
+        # opened and is still the shop's to use.
+        for extra in pool[pool_pos:]:
+            result.remnants_unused.append(extra)
+            result.remnant_reasons.setdefault(extra.label, REMNANT_JOB_ENDED)
+        return result, {pid: n for pid, n in remaining.items() if n > 0}
+
+    if not minimize_sheets:
+        return _pack_with_budget(None)[0]
+
+    return _search(
+        _pack_with_budget,
+        catalog=catalog,
+        base_remaining=base_remaining,
+        spec=spec,
+        pool=pool,
+        nest_in_holes=nest_in_holes,
+        max_new_sheets=max_new_sheets,
+        search_budget_s=search_budget_s,
+        should_cancel=should_cancel,
+    )
+
+
+def _usable_area(spec: SheetSpec, width: float, height: float) -> float:
+    """Area inside the margins of a sheet this size, 0 if the margins eat it."""
+    try:
+        s = spec.resized(width, height)
+    except ValueError:
+        return 0.0
+    return max(s.usable_width, 0.0) * max(s.usable_height, 0.0)
+
+
+def _search(
+    attempt_fn: Callable[[Optional[int], int], Tuple[NestResult, Dict[str, int]]],
+    *,
+    catalog: Dict[str, FlatPart],
+    base_remaining: Dict[str, int],
+    spec: SheetSpec,
+    pool: Sequence[ExtraSheet],
+    nest_in_holes: bool,
+    max_new_sheets: int,
+    search_budget_s: float,
+    should_cancel: Optional[Callable[[], bool]],
+) -> NestResult:
+    """Find the fewest NEW sheets the job can be done in.
+
+    The greedy walk this replaces could only ever answer "how many sheets did I
+    happen to need", because it solved one sheet at a time and never revisited
+    the decision. Measured consequence: offering a job two retazos spent two
+    physical offcuts, bought the SAME three sheets, and dropped the headline
+    yield 7 points. A shop that follows the product's own advice was punished
+    for it.
+
+    So: re-solve under a ceiling, and lower the ceiling while the job stays
+    feasible. Each attempt costs a full solve, so the walk is deliberately
+    short —
+
+    * start at the **area floor** (net part area, less what the rack can hold,
+      over one new sheet's usable area). No packing beats it, so it is both the
+      opening probe and the stop condition;
+    * a failed attempt jumps to what the yield it actually OBSERVED says is
+      needed, rather than stepping +1 blindly;
+    * a feasible attempt probes one lower, but only when a lower count has not
+      already been proven impossible;
+    * whatever happens, the BEST FEASIBLE result seen is what comes back. The
+      search running out of attempts, time or ceiling sets ``capped`` — it never
+      fails a job that a greedy walk would have completed, because the last
+      resort IS the unbounded greedy walk.
+    """
+    started = time.monotonic()
+
+    def out_of_time() -> bool:
+        return bool(search_budget_s) and (time.monotonic() - started) >= search_budget_s
+
+    # Area floor. A part's holes are usable surface only when the hole pass is
+    # on; otherwise they leave as skeleton, so the OUTER area is what a sheet
+    # really has to swallow.
+    part_area = sum(n * (catalog[pid].area if nest_in_holes else catalog[pid].outer_area)
+                    for pid, n in base_remaining.items())
+    rack_area = sum(_usable_area(spec, e.width, e.height) for e in pool)
+    new_area = spec.usable_width * spec.usable_height
+    floor = 1
+    if new_area > 0:
+        floor = max(1, math.ceil((part_area - rack_area) / new_area))
+    floor = min(floor, max_new_sheets)
+
+    tried: List[int] = []
+    best: Optional[NestResult] = None
+    best_n: Optional[int] = None
+    lowest_infeasible = 0          # every ceiling <= this is known impossible
+    budget: Optional[int] = floor
+    capped = False
+    proved = False
+
+    while budget is not None and len(tried) < MAX_SEARCH_ATTEMPTS:
+        if should_cancel is not None and should_cancel():
+            raise NestCancelled(best if best is not None else NestResult(spec=spec))
+        tried.append(budget)
+        try:
+            result, owed = attempt_fn(budget, len(tried))
+        except NestCancelled as e:
+            raise NestCancelled(best if best is not None else e.partial) from None
+
+        if not owed:
+            used = result.new_sheets_needed
+            if best_n is None or used < best_n:
+                best, best_n = result, used
+            if used <= floor or used - 1 <= lowest_infeasible:
+                proved = True             # nothing lower is reachable
+                break
+            budget = used - 1
+        else:
+            lowest_infeasible = max(lowest_infeasible, budget)
+            # What the attempt LEARNED: how much net part area a new sheet
+            # actually swallowed. Project the shortfall onto that instead of
+            # stepping +1 into another doomed solve.
+            owed_area = sum(n * catalog[pid].area for pid, n in owed.items())
+            per_new = _net_area_per_new_sheet(result)
+            step = math.ceil(owed_area / per_new) if per_new > 0 else 1
+            budget = budget + max(1, step)
+
+        if budget > max_new_sheets:
+            budget, capped = None, True
+        elif budget in tried or (best_n is not None and budget >= best_n):
+            budget = None                 # nothing new left to learn
+        elif out_of_time():
+            budget, capped = None, True
+
+    if not proved and len(tried) >= MAX_SEARCH_ATTEMPTS:
+        capped = True
+
+    if best is None:
+        # Nothing feasible inside the ceiling. NEVER fail a job for that: fall
+        # back to the unbounded greedy walk, which is exactly what this module
+        # did before the search existed.
+        capped = True
+        best, _owed = attempt_fn(None, len(tried) + 1)
+        best_n = None                     # no ceiling produced this layout
+
+    best.search = SearchInfo(
+        enabled=True,
+        area_floor_sheets=floor,
+        ceiling_tried=tuple(tried),
+        ceiling_used=best_n,
+        attempts=len(tried),
+        capped=capped,
+    )
+    return best
+
+
+def _net_area_per_new_sheet(result: NestResult) -> float:
+    """Net part area a NEW sheet actually swallowed in this attempt (mm²)."""
+    sheets = [s for s in result.sheets if not s.is_remnant]
+    if not sheets:
+        return 0.0
+    return sum(s.used_area for s in sheets) / len(sheets)
 
 
 def reclaimable_rectangle(

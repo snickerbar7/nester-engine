@@ -39,6 +39,7 @@ from io import BytesIO
 from typing import Dict, List, Sequence, Tuple
 
 from .contour import simplify_ring
+from .result_json import as_dict as _as_dict  # noqa: F401  (re-exported)
 from .model import FlatPart, NestResult, Point, SheetLayout, SheetSpec
 from .pack import transform
 
@@ -374,104 +375,6 @@ def _part_base(name: str) -> str:
     stem = re.sub(r"\.dxf$", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"[_\-]\d+\s*(?:pz[a-z]*|pcs)$", "", stem, flags=re.IGNORECASE)
     return f"{stem} #{tail}" if tail else stem
-
-
-# --------------------------------------------------------------------------- #
-# JSON  (schema frozen — the service and the web product read this)
-# --------------------------------------------------------------------------- #
-
-def _as_dict(result: NestResult, job_name: str, meta: dict,
-             warnings: List[str] | None = None) -> dict:
-    """The machine-readable nest. Additive only — the web product reads this.
-
-    Three families of field carry the E8/E15/E16 work:
-
-    * weights (``totals.*_kg``) appear ONLY when the stock has both a thickness
-      and a known density. An absent key means "cannot be weighed"; it never
-      means zero, and there is deliberately no fallback density;
-    * retazos split ``totals.sheets`` (opened) from ``totals.sheets_to_buy``
-      (purchased) — with a rack in play those are different numbers, and only
-      the second one goes on a purchase order;
-    * ``reclaimable`` / ``sheets[].leftover`` describe the offcut each sheet
-      leaves, in sheet coordinates, so it can be booked into a retazo inventory
-      instead of being written off as drop.
-    """
-    spec = result.spec
-    totals = {
-        "sheets": result.sheet_count,
-        "sheets_to_buy": result.new_sheets_needed,
-        "remnants_used": result.remnants_used,
-        "yield_pct": round(result.yield_pct, 2),
-        "parts_placed": sum(s.part_count for s in result.sheets),
-        "parts_in_holes": result.in_hole_count,
-        "unplaceable": len(result.unplaceable),
-        "reclaimable_area_mm2": round(result.reclaimable_area, 2),
-    }
-    if result.can_weigh:
-        totals.update({
-            "parts_kg": round(result.parts_weight_kg, 3),
-            "stock_kg": round(result.stock_weight_kg, 3),
-            "to_buy_kg": round(result.new_stock_weight_kg, 3),
-            "drop_kg": round(result.drop_weight_kg, 3),
-        })
-    return {
-        "job": job_name,
-        "generated": meta.get("generated", ""),
-        "warnings": list(warnings or []),
-        "params": {
-            "material": spec.material,
-            "thickness": spec.thickness,
-            "density_kg_m3": spec.density or None,
-            "sheet_width": spec.width,
-            "sheet_height": spec.height,
-            "margin": spec.margin,
-            "part_gap": spec.part_gap,
-            "rotation": meta.get("rotation", ""),
-            "nest_in_holes": bool(meta.get("nest_in_holes", False)),
-            "min_remnant_mm": meta.get("min_remnant", 0) or 0,
-        },
-        "totals": totals,
-        "sheets": [
-            {
-                "sheet": s.index + 1,
-                "source": s.source,
-                "width": s.spec.width,
-                "height": s.spec.height,
-                "utilization_pct": round(s.utilization * 100, 2),
-                "leftover": (
-                    {
-                        "x": round(s.leftover.x, 2), "y": round(s.leftover.y, 2),
-                        "width": round(s.leftover.width, 2),
-                        "height": round(s.leftover.height, 2),
-                    } if s.leftover else None
-                ),
-                "parts": [
-                    {
-                        "name": p.part.name,
-                        "x": round(p.x, 3),
-                        "y": round(p.y, 3),
-                        "rotation": round(p.rotation, 3),
-                        "in_hole_of": p.in_hole_of,
-                    }
-                    for p in s.placements
-                ],
-            }
-            for s in result.sheets
-        ],
-        "remnants_unused": [
-            {"label": e.label, "width": e.width, "height": e.height}
-            for e in result.remnants_unused
-        ],
-        "reclaimable": [
-            {"sheet": n, "x": round(lo.x, 2), "y": round(lo.y, 2),
-             "width": round(lo.width, 2), "height": round(lo.height, 2)}
-            for n, lo in result.reclaimable
-        ],
-        "unplaceable": [
-            {"name": p.name, "width": round(p.size[0], 2), "height": round(p.size[1], 2)}
-            for p in result.unplaceable
-        ],
-    }
 
 
 # --------------------------------------------------------------------------- #

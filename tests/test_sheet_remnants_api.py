@@ -246,7 +246,7 @@ def test_harriet_nest_ignores_the_sheet_options(client, monkeypatch):
 
 def _square(name, size=100.0, hole=None, qty=1):
     outer = ((0, 0), (size, 0), (size, size), (0, size))
-    holes = ((hole,),) if hole else ()
+    holes = (hole,) if hole else ()
     return FlatPart(name=name, outer=outer, holes=holes, qty=qty)
 
 

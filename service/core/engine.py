@@ -43,7 +43,12 @@ from nester.sheet.contour import (
 )
 from nester.sheet.dxf_read import read_parts as _sheet_read_parts
 from nester.sheet.model import ExtraSheet, FlatPart, NestResult, SheetSpec
-from nester.sheet.pack import nest as _sheet_nest, transform as _sheet_transform
+from nester.sheet.pack import (
+    DEFAULT_MAX_NEW_SHEETS,
+    DEFAULT_MIN_HOLE_SIDE,
+    nest as _sheet_nest,
+    transform as _sheet_transform,
+)
 from nester.sheet.report import write_reports as _sheet_write_reports, _as_dict as _sheet_as_dict
 
 _IGES_EXTS = (".igs", ".iges")
@@ -362,9 +367,29 @@ def sheet_part_index(
             "height_mm": round(h, 3),
             "area_mm2": round(part.area, 3),
             "holes": len(part.holes),
+            # Whether this job HAS voids worth nesting into, answered off the
+            # real geometry. A client must not re-derive it from `contour`: that
+            # ring is decimated for drawing, so measuring it would quietly
+            # disagree with what the engine decided.
+            "max_hole_side_mm": _max_hole_side(part),
+            "hole_area_mm2": round(part.hole_area, 3),
             "contour": contour,
         })
     return parts, origins
+
+
+def _max_hole_side(part: FlatPart) -> Optional[float]:
+    """Widest hole in this part, measured on its narrow side (mm); None if solid.
+
+    A hole can only host a part up to its LIMITING dimension, so each hole is
+    scored by the short side of its bounding box and the biggest score wins.
+    """
+    sides = []
+    for hole in part.holes:
+        xs = [p[0] for p in hole]
+        ys = [p[1] for p in hole]
+        sides.append(min(max(xs) - min(xs), max(ys) - min(ys)))
+    return round(max(sides), 3) if sides else None
 
 
 def _annotate_placements(result_json: Dict[str, Any], result: NestResult,
@@ -446,6 +471,11 @@ def nest_sheet(
     extra_sheets: Optional[List[Dict[str, Any]]] = None,
     nest_in_holes: bool = False,
     min_remnant: float = 0.0,
+    minimize_sheets: bool = True,
+    max_new_sheets: int = DEFAULT_MAX_NEW_SHEETS,
+    search_budget_s: float = 0.0,
+    min_hole_side: float = DEFAULT_MIN_HOLE_SIDE,
+    kerf: float = 0.0,
     density: Optional[float] = None,
     qty_regex: Optional[str] = DEFAULT_QTY_REGEX,
     job_name: str = "nest",
@@ -462,6 +492,13 @@ def nest_sheet(
     (E15); ``min_remnant`` is the shortest side worth reporting back as a
     reclaimable offcut. ``density`` (kg/m3) overrides what ``material`` resolves
     to — with neither, the job simply reports no weights (E8).
+
+    ``minimize_sheets`` (on by default) searches for the fewest NEW sheets the
+    job can be done in instead of walking greedily; ``max_new_sheets`` and
+    ``search_budget_s`` bound that search and ``min_hole_side`` is the shortest
+    side a void must have to be worth filling. ``kerf`` is carried through to
+    ``result.params.kerf_mm`` for the client to compare against the part gap —
+    the engine never applies kerf compensation, which stays the CAM's job.
 
     ``include_contours`` adds a ``parts`` section (one entry per UNIQUE part,
     with its decimated silhouette) to the result and, on every placement, the
@@ -503,6 +540,10 @@ def nest_sheet(
         result = _sheet_nest(parts, spec, rotation=rotate, time_per_sheet=time_per_sheet,
                              seed=seed, extra_sheets=_sheet_remnants(extra_sheets),
                              nest_in_holes=nest_in_holes, min_remnant=min_remnant,
+                             minimize_sheets=minimize_sheets,
+                             max_new_sheets=max_new_sheets,
+                             search_budget_s=search_budget_s,
+                             min_hole_side=min_hole_side,
                              progress=progress, should_cancel=should_cancel)
         # Parts the nesting engine refused (degenerate contours) join the
         # unreadable-file errors — same channel, already surfaced by the client.
@@ -516,7 +557,9 @@ def nest_sheet(
         # `nest_in_holes` / `min_remnant` are job settings, not stock: they live
         # in meta, which is what the report echoes into the plan's parameters.
         meta = {"generated": "", "lang": lang, "rotation": rotate,
-                "nest_in_holes": nest_in_holes, "min_remnant": min_remnant}
+                "nest_in_holes": nest_in_holes, "min_remnant": min_remnant,
+                "minimize_sheets": minimize_sheets, "max_new_sheets": max_new_sheets,
+                "min_hole_side": min_hole_side, "kerf": kerf}
         result_json = _sheet_as_dict(result, job_name, meta)
         if include_contours:
             part_index, origins = sheet_part_index(result)

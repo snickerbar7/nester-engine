@@ -22,7 +22,9 @@ from typing import List
 from ..materials import density_for, material_label
 from .dxf_read import DxfReadError, read_parts
 from .model import ExtraSheet, FlatPart, NestResult, SheetSpec
-from .pack import ROTATION_MODES, NestError, nest
+from .pack import (
+    DEFAULT_MAX_NEW_SHEETS, DEFAULT_MIN_HOLE_SIDE, ROTATION_MODES, NestError, nest,
+)
 from .report import _slug, _part_base, write_reports
 
 # quantity-from-filename (and the juegos multiplier) are shared with the tube tool.
@@ -101,7 +103,11 @@ def main(argv: List[str] | None = None) -> int:
         result = nest(parts, spec, rotation=args.rotate, time_per_sheet=args.time,
                       seed=args.seed, extra_sheets=remnants,
                       nest_in_holes=args.nest_in_holes,
-                      min_remnant=args.min_remnant)
+                      min_remnant=args.min_remnant,
+                      minimize_sheets=args.minimize_sheets,
+                      max_new_sheets=args.max_new_sheets,
+                      search_budget_s=args.search_budget,
+                      min_hole_side=args.min_hole_side)
     except NestError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -163,6 +169,12 @@ def _meta(args) -> dict:
         "time_per_sheet": args.time,
         "nest_in_holes": bool(args.nest_in_holes),
         "min_remnant": args.min_remnant,
+        "minimize_sheets": bool(args.minimize_sheets),
+        "max_new_sheets": args.max_new_sheets,
+        "min_hole_side": args.min_hole_side,
+        # Reported, never applied: kerf compensation is the CAM's job. It rides
+        # the plan so the shop can check the gap really does clear the kerf.
+        "kerf": args.kerf,
     }
 
 
@@ -203,6 +215,28 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="also nest small parts INSIDE the holes of placed parts. "
                         "Off by default: those parts come out inside a slug, so "
                         "the operator has to be told (the plan says so).")
+    p.add_argument("--minimize-sheets", dest="minimize_sheets",
+                   action=argparse.BooleanOptionalAction, default=True,
+                   help="search for the FEWEST new sheets the job fits in, instead "
+                        "of walking greedily until the parts run out (default on). "
+                        "--no-minimize-sheets restores the old greedy loop.")
+    p.add_argument("--max-new-sheets", type=int, default=DEFAULT_MAX_NEW_SHEETS,
+                   metavar="N",
+                   help=f"ceiling the sheet search will never look past "
+                        f"(default {DEFAULT_MAX_NEW_SHEETS}). Past it the greedy "
+                        f"answer is returned, flagged as capped.")
+    p.add_argument("--search-budget", type=float, default=0.0, metavar="SEC",
+                   help="wall-clock cap for the WHOLE sheet search; the best "
+                        "feasible nest found so far is returned. 0 = no cap.")
+    p.add_argument("--min-hole-side", type=float, default=DEFAULT_MIN_HOLE_SIDE,
+                   metavar="MM",
+                   help=f"shortest side a void must have to be worth nesting into "
+                        f"(default {DEFAULT_MIN_HOLE_SIDE:g}). A bolt hole is not "
+                        f"usable surface.")
+    p.add_argument("--kerf", type=float, default=0.0, metavar="MM",
+                   help="the machine's kerf, REPORTED in the plan so the gap can be "
+                        "checked against it. Kerf compensation itself is the CAM's "
+                        "job — the nest never applies it.")
     p.add_argument("--density", type=float, default=None, metavar="KG_M3",
                    help="material density in kg/m³, for the weight lines. Normally "
                         "resolved from --material; pass this for an alloy the "
@@ -318,8 +352,12 @@ def _format_report(result: NestResult, errors_count: int) -> str:
     spec = result.spec
     lines: List[str] = []
     placed = sum(s.part_count for s in result.sheets)
+    # Net first, gross beside it — the same hierarchy the plan prints. Net
+    # discounts the offcut that goes back on the rack, so a job that used
+    # retazos is not punished for it.
     header = (f"Flat nesting — {result.sheet_count} sheet(s) @ {spec.width:g}×{spec.height:g}mm"
-              f"  ·  yield {result.yield_pct:.1f}%  ·  {placed} part(s)")
+              f"  ·  net {result.net_yield_pct:.1f}% / gross {result.yield_pct:.1f}%"
+              f"  ·  {placed} part(s)")
     if errors_count:
         header += f"  ({errors_count} file(s) skipped)"
     # What to BUY is the number procurement acts on; it only differs from the

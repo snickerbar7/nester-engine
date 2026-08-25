@@ -75,10 +75,13 @@ def _multi_sheet_job():
 
 
 def test_progress_is_reported_once_per_completed_sheet():
+    # One tick per sheet is the contract WITHIN a pass. The sheet-count search
+    # makes several passes, so it is switched off here and asserted separately
+    # in test_progress_is_grouped_by_search_attempt.
     parts, spec = _multi_sheet_job()
     ticks = []
     result = nest(parts, spec, rotation="ortho", time_per_sheet=1, seed=0,
-                  progress=ticks.append)
+                  minimize_sheets=False, progress=ticks.append)
 
     assert len(ticks) == result.sheet_count >= 2
     assert all(isinstance(t, NestProgress) for t in ticks)
@@ -94,6 +97,27 @@ def test_progress_is_reported_once_per_completed_sheet():
     assert all(t.sheets_total_estimate >= t.sheets_done for t in ticks)
     assert ticks[-1].sheets_total_estimate == result.sheet_count
     assert 0 < ticks[0].last_sheet_utilization_pct <= 100
+
+
+def test_progress_is_grouped_by_search_attempt():
+    """A second attempt restarts sheets_done at zero — that is a new pass, not
+    the solve going backwards, so every tick says which attempt it belongs to."""
+    parts, spec = _multi_sheet_job()
+    ticks = []
+    nest(parts, spec, rotation="ortho", time_per_sheet=1, seed=0,
+         progress=ticks.append)
+
+    assert ticks and all(t.attempt >= 1 for t in ticks)
+    # attempts only ever go up, and each one counts its own sheets from 1
+    assert [t.attempt for t in ticks] == sorted(t.attempt for t in ticks)
+    for attempt in {t.attempt for t in ticks}:
+        run = [t for t in ticks if t.attempt == attempt]
+        assert [t.sheets_done for t in run] == list(range(1, len(run) + 1))
+        # a ceiling is a REAL bound, so the estimate never exceeds it
+        for t in run:
+            assert t.sheets_total_estimate >= t.sheets_done
+            if t.new_sheet_ceiling is not None:
+                assert t.sheets_total_estimate <= t.sheets_done + t.new_sheet_ceiling
 
 
 def test_unplaceable_parts_are_excluded_from_the_progress_denominator():

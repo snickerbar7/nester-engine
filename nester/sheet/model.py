@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from ..materials import weight_kg
 
@@ -33,6 +33,13 @@ Contour = Tuple[Point, ...]  # ordered ring of vertices (not necessarily closed)
 
 #: ``SheetLayout.source`` for a full sheet the shop has to buy.
 NEW_SHEET = "nueva"
+
+# Why a retazo offered to the job was never opened. Reported per piece so the
+# shop can tell "nothing left fitted it" from "the job finished first" — the
+# first is a fact about the rack, the second is a fact about the job.
+REMNANT_NO_FIT = "no_fit"
+REMNANT_TOO_SMALL = "too_small_for_margin"
+REMNANT_JOB_ENDED = "job_ended"
 
 
 def transform(points: Sequence[Point], deg: float, tx: float, ty: float) -> List[Point]:
@@ -307,6 +314,34 @@ class SheetLayout:
         return self.spec.weight_kg
 
 
+@dataclass(frozen=True)
+class SearchInfo:
+    """What the sheet-count search actually did — reported, never inferred.
+
+    The multi-sheet loop used to be an unbounded greedy walk: one sheet solved
+    at a time, appended, closed forever. It could therefore never answer the
+    question the shop is really asking ("how few sheets do I have to BUY?"), and
+    a job that spent retazos could end up buying exactly as many new sheets as
+    one that spent none. The search re-solves under a *ceiling* on new sheets
+    and lowers that ceiling while the job stays feasible.
+
+    ``area_floor_sheets`` is the physical lower bound (net part area minus what
+    the rack can hold, over one new sheet's usable area) — no packing can beat
+    it. ``ceiling_tried`` is every ceiling attempted, in order; ``ceiling_used``
+    is the one that produced the returned layout. ``capped`` means the search
+    stopped on its attempt/time/``max_new_sheets`` limit rather than because it
+    had proved it could do no better: the result is the best FEASIBLE one seen,
+    never a failure.
+    """
+
+    enabled: bool = False
+    area_floor_sheets: int = 0
+    ceiling_tried: Tuple[int, ...] = ()
+    ceiling_used: Optional[int] = None
+    attempts: int = 0
+    capped: bool = False
+
+
 @dataclass
 class NestResult:
     """Nesting result for one stock group (single material/thickness)."""
@@ -323,6 +358,10 @@ class NestResult:
     # job ended first. Reported so the shop knows the rack was not silently
     # ignored, and so the piece stays available for the next job.
     remnants_unused: List[ExtraSheet] = field(default_factory=list)
+    # {label: one of REMNANT_*} — WHY each unused retazo was never opened.
+    remnant_reasons: Dict[str, str] = field(default_factory=dict)
+    # How the sheet-count search behaved. Default = the old greedy walk.
+    search: SearchInfo = field(default_factory=SearchInfo)
 
     @property
     def messages(self) -> List[str]:
@@ -402,3 +441,53 @@ class NestResult:
         if not self.total_sheet_area:
             return 0.0
         return 100.0 * self.total_part_area / self.total_sheet_area
+
+    # ----------------------------------------------------------------- #
+    # Net vs gross (the design's "Métricas 2D")
+    # ----------------------------------------------------------------- #
+    # ``yield_pct`` above is the GROSS number and keeps its name, meaning and
+    # value forever — the plan, the service and the web product all read it.
+    # The net number below is the headline: it discounts the leftover that goes
+    # BACK on the rack, exactly as the tube tool discounts a reclaimable retazo.
+    # Without that, offering the job a retazo the shop already paid for ADDS to
+    # the denominator and the headline yield drops — the product punishing the
+    # shop for taking its own advice. Rule: no headline metric may get worse
+    # because a job used material that was already bought.
+
+    @property
+    def consumed_area(self) -> float:
+        """Stock opened MINUS what goes back to the rack (mm²)."""
+        return max(self.total_sheet_area - self.reclaimable_area, 0.0)
+
+    @property
+    def waste_area(self) -> float:
+        """Material that neither leaves as a part nor returns to the rack (mm²)."""
+        return max(self.total_sheet_area - self.total_part_area - self.reclaimable_area, 0.0)
+
+    @property
+    def net_yield_pct(self) -> float:
+        """The headline: parts over the material actually consumed."""
+        consumed = self.consumed_area
+        if not consumed:
+            return 0.0
+        return 100.0 * self.total_part_area / consumed
+
+    @property
+    def gross_yield_pct(self) -> float:
+        """Parts over every square millimetre opened. Same value as ``yield_pct``."""
+        return self.yield_pct
+
+    @property
+    def rack_stock_weight_kg(self) -> float:
+        """Mass that came off the rack rather than off a purchase order (kg)."""
+        return sum(s.stock_weight_kg for s in self.sheets if s.is_remnant)
+
+    @property
+    def reclaimable_weight_kg(self) -> float:
+        """Mass of the offcuts booked back into inventory (kg)."""
+        return weight_kg(self.reclaimable_area, self.spec.thickness, self.spec.density)
+
+    @property
+    def waste_weight_kg(self) -> float:
+        """Mass really lost (kg) — drop minus what goes back on the rack."""
+        return weight_kg(self.waste_area, self.spec.thickness, self.spec.density)
