@@ -149,7 +149,7 @@ _LANG = {
         "ctl_counted": "Piezas contadas al descargar",
         # ---- chrome ----
         "sheet": "hoja {p} / {n}",
-        "foot_cover": "hecho con {brand} · {date}",
+        "foot_cover": "hecho con {brand} · nester.harriet.com.mx · {date}",
         "foot_params": "margen {margin} · separación {gap} · rotación {rot}",
         "foot_seed": "motor spyrrow · semilla {seed}",
         "empty": "Ninguna pieza se pudo colocar en una lámina.",
@@ -232,7 +232,7 @@ _LANG = {
         "ctl_program": "Program {file} loaded",
         "ctl_counted": "Parts counted when unloading",
         "sheet": "sheet {p} / {n}",
-        "foot_cover": "made with {brand} · {date}",
+        "foot_cover": "made with {brand} · nester.harriet.com.mx · {date}",
         "foot_params": "margin {margin} · gap {gap} · rotation {rot}",
         "foot_seed": "spyrrow solver · seed {seed}",
         "empty": "No part could be placed on a sheet.",

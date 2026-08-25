@@ -166,7 +166,7 @@ _LANG = {
         "meta_bars": "TRAMOS A COMPRAR", "meta_pieces": "PIEZAS",
         "sheet": "hoja {p} / {n}",
         "foot_note": "medidas en mm · acumulado desde el tope, incluye kerf {kerf}",
-        "foot_cover": "hecho con {brand} · {date}",
+        "foot_cover": "hecho con {brand} · nester.harriet.com.mx · {date}",
     },
     "en": {
         "title": "Cut plan",
@@ -235,7 +235,7 @@ _LANG = {
         "meta_bars": "BARS TO BUY", "meta_pieces": "PIECES",
         "sheet": "sheet {p} / {n}",
         "foot_note": "measurements in mm · running position from the stop, kerf {kerf} included",
-        "foot_cover": "made with {brand} · {date}",
+        "foot_cover": "made with {brand} · nester.harriet.com.mx · {date}",
     },
 }
 
