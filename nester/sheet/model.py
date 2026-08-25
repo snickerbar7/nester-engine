@@ -170,6 +170,16 @@ class NestResult:
     spec: SheetSpec
     sheets: List[SheetLayout] = field(default_factory=list)
     unplaceable: List[FlatPart] = field(default_factory=list)  # larger than a usable sheet
+    # Parts the nesting engine cannot accept at all (degenerate contour). Each
+    # entry is (part, ready-to-show message naming the file). They never reach
+    # the solver and are never silently dropped — callers append ``messages``
+    # to the job's ``errors[]``.
+    invalid: List[Tuple[FlatPart, str]] = field(default_factory=list)
+
+    @property
+    def messages(self) -> List[str]:
+        """User-facing reasons for every rejected part, in input order."""
+        return [msg for _part, msg in self.invalid]
 
     @property
     def sheet_count(self) -> int:

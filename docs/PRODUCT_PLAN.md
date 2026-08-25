@@ -91,6 +91,7 @@ be confidently wrong.
 | E4 | `except Exception: pass` around IGES-nest and DXF-per-sheet writes → missing deliverables with no explanation. | Return reason in `warnings[]`; AI must surface it. | **S** |
 | E5 | Profile comes only from filename; `Part1.igs` fails or garbage-buckets. | Fall back to grouping by measured cross-section; AI/user names and confirms each group. | M |
 | E6 | No per-part QA signal for the AI to relay. | Every part carries `{measured_cross_section, matches_profile, straight, source_entities}`; AI surfaces mismatches before nesting. | M |
+| E21 ✅ | 2D nesting could die on a raw Rust panic (`PanicException: … Offset resulted in an empty polygon`) — `PanicException` derives from **BaseException**, so every `except Exception` in the stack missed it and the user saw an unwrap string. Hit in production on a real job (915×2440 sheet, gap 3, three small parts). | **DONE** — two layers in `nester/sheet/pack.py`. (1) **Pre-flight**: `validate_part()` rejects the contours jagua-rs unwraps on (<3 distinct points, zero area, non-finite) into `NestResult.invalid` → the job's `errors[]`, named per file, rest of the job proceeds; all-invalid → clean `NestError`. `_safe_strip_height()` closes the real root cause — jagua-rs seeds the strip at `Σarea/strip_height` then offsets it inward by `sep/2` per side, so a **small job on a tall sheet** collapses the seed (survives iff `Σarea/strip_height > gap`); the guard shortens the strip, or falls back to a deterministic shelf pack when no safe height exists. (2) **Containment**: the solve is wrapped to catch `BaseException` (re-raising `KeyboardInterrupt`/`SystemExit`/`GeneratorExit`) and convert to `NestError` naming sheet, margin, gap, rotation and part counts. | S |
 
 ### Tier 1 — speaking the trade + the cost line
 
@@ -205,6 +206,17 @@ hook); a clear statement of what happens to their files.
 > per-sheet utilization the chips show). Remaining app-side work: wire the poll
 > loop, the cancel button and the SVG nest view. Next engine contracts, in
 > order: angle/bisel detection, E8 weight, mixed placas (E13), STEP (E12).
+>
+> **E21 — engine panic containment, 2026-08-24.** A real customer 2D job died
+> in ~1 s with a raw `pyo3_runtime.PanicException` out of jagua-rs. Root cause
+> was *not* the thin solera it looked like: jagua-rs seeds its strip rectangle
+> at `Σ(item area × demand) / strip_height` and offsets it inward by
+> `min_items_separation / 2` per side, so **any** small job on a tall sheet
+> (`Σarea/strip_height ≤ gap`) empties the seed before the first placement —
+> measured exactly at `Σarea = gap × strip_height`. Item offsets go *outward*,
+> so thin parts were never at risk. Fixed in `nester/sheet/pack.py` with a
+> pre-flight guard plus a `BaseException` boundary on the solve; the sheet
+> nester now has no path that ends in an unreadable Rust string.
 
 **Phase 0 — Boundary (days).** A1–A4 + second API key on the existing Render
 service. A5 slipped past launch (tube-first) and landed 2026-08-24. ✅

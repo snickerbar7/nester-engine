@@ -62,6 +62,12 @@ def main(argv: List[str] | None = None) -> int:
         print(str(e), file=sys.stderr)
         return 1
 
+    # Parts the engine refused (degenerate contours) ride the same errors[]
+    # channel as unreadable files — named, never silently dropped.
+    for msg in result.messages:
+        errors.append(msg)
+        print(f"  ! {msg}", file=sys.stderr)
+
     if args.json:
         from .report import _as_dict
         print(json.dumps(_as_dict(result, args.name or "nest", _meta(args)), indent=2, ensure_ascii=False))
@@ -74,7 +80,9 @@ def main(argv: List[str] | None = None) -> int:
         # Attempt the per-sheet DXF write BEFORE the JSON so a failure (E4)
         # can be recorded as a warning IN the JSON, not silently dropped. A
         # failure here must not abort the job — the cut-plan PDF + JSON stand.
-        out_warnings: List[str] = []
+        # Rejected parts also go into the written artifacts, so the reason
+        # survives past the terminal session.
+        out_warnings: List[str] = list(result.messages)
         dxf_files: List[str] = []
         if not args.no_dxf:
             from .dxf_out import write_all_sheets
