@@ -34,6 +34,7 @@ from nester.tube.profile import (
 from nester.tube.report import write_reports as _tube_write_reports, _slug
 
 # --- sheet pipeline (unchanged engine) ---
+from nester.materials import density_for
 from nester.sheet.contour import (
     DEFAULT_TOLERANCE as CONTOUR_TOLERANCE,
     MAX_POINTS as CONTOUR_MAX_POINTS,
@@ -41,7 +42,7 @@ from nester.sheet.contour import (
     part_contour_with_origin,
 )
 from nester.sheet.dxf_read import read_parts as _sheet_read_parts
-from nester.sheet.model import FlatPart, NestResult, SheetSpec
+from nester.sheet.model import ExtraSheet, FlatPart, NestResult, SheetSpec
 from nester.sheet.pack import nest as _sheet_nest, transform as _sheet_transform
 from nester.sheet.report import write_reports as _sheet_write_reports, _as_dict as _sheet_as_dict
 
@@ -393,6 +394,43 @@ def _annotate_placements(result_json: Dict[str, Any], result: NestResult,
                                   round(max(xs), 3), round(max(ys), 3)]
 
 
+def _sheet_remnants(entries: Optional[List[Dict[str, Any]]]) -> Tuple[ExtraSheet, ...]:
+    """Retazo rack entries (``{"width_mm", "height_mm", "label"}``) -> ExtraSheets.
+
+    Unlike a tube retazo there is nothing to match a sheet offcut against: a
+    sheet job is ONE material/thickness group, so every piece the caller offers
+    belongs to this nest. One that ends up holding nothing is never consumed —
+    it comes back in ``remnants_unused`` and stays on the rack.
+    """
+    return tuple(
+        ExtraSheet(width=float(e["width_mm"]), height=float(e["height_mm"]),
+                   label=str(e["label"]).strip())
+        for e in entries or ()
+    )
+
+
+def _resolve_density(material: str, override: Optional[float]) -> Tuple[float, Optional[str]]:
+    """(density in kg/m3, note) — an explicit value wins, else the material table.
+
+    Zero is an honest answer, not a failure: the plan then reports no kilos at
+    all rather than a weight nobody can defend. Same rule (and same wording) as
+    ``nester.sheet.cli``. The note explains WHY there are no kilos; a caller can
+    also read it structurally off ``result.params.density_kg_m3`` being null.
+    """
+    if override is not None:
+        if override <= 0:
+            raise ValueError(f"density_kg_m3 must be > 0, got {override:g}")
+        return float(override), None
+    if not (material or "").strip():
+        return 0.0, ("sin material no hay densidad: el plan no reporta kilos "
+                     "(pasa material o density_kg_m3)")
+    known = density_for(material)
+    if known is None:
+        return 0.0, (f"material '{material}' no está en la tabla de densidades: "
+                     f"el plan no reporta kilos (pasa density_kg_m3)")
+    return known, None
+
+
 def nest_sheet(
     files: List[InFile],
     *,
@@ -405,6 +443,10 @@ def nest_sheet(
     rotate: str = "free",
     time_per_sheet: int = 4,
     seed: int = 0,
+    extra_sheets: Optional[List[Dict[str, Any]]] = None,
+    nest_in_holes: bool = False,
+    min_remnant: float = 0.0,
+    density: Optional[float] = None,
     qty_regex: Optional[str] = DEFAULT_QTY_REGEX,
     job_name: str = "nest",
     lang: str = "es",
@@ -415,12 +457,31 @@ def nest_sheet(
 ) -> Dict[str, Any]:
     """Nest flat parts onto sheets and write the shop artifacts.
 
+    ``extra_sheets`` are the shop's retazos (E16), spent before any new sheet is
+    bought; ``nest_in_holes`` fills placed parts' holes with smaller parts
+    (E15); ``min_remnant`` is the shortest side worth reporting back as a
+    reclaimable offcut. ``density`` (kg/m3) overrides what ``material`` resolves
+    to — with neither, the job simply reports no weights (E8).
+
     ``include_contours`` adds a ``parts`` section (one entry per UNIQUE part,
     with its decimated silhouette) to the result and, on every placement, the
     ``contour_offset_mm`` / ``bbox_mm`` a client needs to draw it. ``progress``
     and ``should_cancel`` are handed straight to the multi-sheet loop — the
     async jobs API uses them; the sync callers pass neither.
     """
+    # Job-level notes (not about one file). They are returned under their own
+    # key, NOT on ``warnings``: that channel means "an artifact could not be
+    # produced" (E4), and Harriet's frozen /nest reads it. The plan raises both
+    # of these from the result itself — a "sin kilos" card and an "unused
+    # retazo" card — so putting them here too would double-print them and make a
+    # clean run look like a failed one.
+    notes: List[str] = []
+    density_value, density_note = _resolve_density(material, density)
+    if density_note:
+        notes.append(density_note)
+    elif density_value and thickness <= 0:
+        notes.append("sin espesor no hay kilos: pasa thickness_mm")
+
     sets = _sets_map(files)
     with tempfile.TemporaryDirectory() as tmp:
         paths = _materialize(files, tmp)
@@ -437,13 +498,25 @@ def nest_sheet(
             raise ValueError("no readable parts: " + "; ".join(errors) if errors else "no parts")
 
         spec = SheetSpec(width=width, height=height, material=material,
-                         thickness=thickness, margin=margin, part_gap=gap)
+                         thickness=thickness, margin=margin, part_gap=gap,
+                         density=density_value)
         result = _sheet_nest(parts, spec, rotation=rotate, time_per_sheet=time_per_sheet,
-                             seed=seed, progress=progress, should_cancel=should_cancel)
+                             seed=seed, extra_sheets=_sheet_remnants(extra_sheets),
+                             nest_in_holes=nest_in_holes, min_remnant=min_remnant,
+                             progress=progress, should_cancel=should_cancel)
         # Parts the nesting engine refused (degenerate contours) join the
         # unreadable-file errors — same channel, already surfaced by the client.
         errors += list(result.messages)
-        meta = {"generated": "", "lang": lang, "rotation": rotate}
+        # A retazo the nest never opened is information, never an error: the shop
+        # has to hear that the rack was not silently ignored and the piece is
+        # still there for the next job.
+        notes += [f"retazo {u.label} ({u.width:g}×{u.height:g}) no se usó: sigue en el rack"
+                  for u in result.remnants_unused]
+
+        # `nest_in_holes` / `min_remnant` are job settings, not stock: they live
+        # in meta, which is what the report echoes into the plan's parameters.
+        meta = {"generated": "", "lang": lang, "rotation": rotate,
+                "nest_in_holes": nest_in_holes, "min_remnant": min_remnant}
         result_json = _sheet_as_dict(result, job_name, meta)
         if include_contours:
             part_index, origins = sheet_part_index(result)
@@ -464,4 +537,4 @@ def nest_sheet(
             artifacts = _upload_artifacts(written, out_prefix)
 
     return {"mode": "sheet", "result": result_json, "artifacts": artifacts,
-            "errors": errors, "warnings": warnings}
+            "errors": errors, "warnings": warnings, "notes": notes}

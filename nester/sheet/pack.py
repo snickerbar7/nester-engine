@@ -39,12 +39,19 @@ raises :class:`NestCancelled`, which carries the sheets solved so far.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+from .holes import nest_into_holes
 from .model import (
-    FlatPart, NestResult, Placement, Point, SheetLayout, SheetSpec, polygon_area,
+    NEW_SHEET, ExtraSheet, FlatPart, Leftover, NestResult, Placement, Point,
+    SheetLayout, SheetSpec, polygon_area, transform,
 )
+
+__all__ = [
+    "nest", "transform", "validate_part", "reclaimable_rectangle",
+    "NestError", "NestCancelled", "NestProgress", "ROTATION_MODES",
+]
 
 # Named rotation policies -> allowed orientation angles (degrees). None = free.
 ROTATION_MODES: Dict[str, Optional[Tuple[float, ...]]] = {
@@ -141,6 +148,9 @@ def nest(
     time_per_sheet: int = 4,
     seed: int = 0,
     max_sheets: int = 1000,
+    extra_sheets: Sequence[ExtraSheet] = (),
+    nest_in_holes: bool = False,
+    min_remnant: float = 0.0,
     progress: Optional[ProgressCallback] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> NestResult:
@@ -149,6 +159,20 @@ def nest(
     ``rotation`` is a key of :data:`ROTATION_MODES` (the job-wide default; a part
     may override via its own ``allowed_orientations``). ``time_per_sheet`` is the
     per-solve compute budget in seconds — more time, better density.
+
+    ``extra_sheets`` are the shop's retazos (E16): a finite pool of offcuts, each
+    usable once, spent SMALLEST FIRST before any new sheet is bought — the same
+    rule the tube tool applies to bar remnants, and for the same reason (a big
+    retazo is the only thing a big part can land on, so it is kept free as long
+    as possible). A retazo that ends up holding nothing is left on the rack and
+    reported in ``remnants_unused``, never consumed for an empty sheet.
+
+    ``nest_in_holes`` turns on the second pass that fills already-placed parts'
+    holes with still-unplaced parts (E15). It is off by default because it has a
+    consequence on the machine: those parts come out inside a slug.
+
+    ``min_remnant`` (mm) is the shortest side worth reclaiming; above zero, each
+    sheet reports the rectangle still left on it as a retazo candidate.
 
     ``progress`` is called with a :class:`NestProgress` after each sheet is
     solved; ``should_cancel`` is consulted before each sheet and raises
@@ -167,7 +191,18 @@ def nest(
         raise NestError(f"unknown rotation mode '{rotation}'. Options: {sorted(ROTATION_MODES)}")
     job_orient = ROTATION_MODES[rotation]
 
-    uw, uh = spec.usable_width, spec.usable_height
+    # "Too big to nest at all" is measured against the LARGEST stock on offer,
+    # not just a new sheet: a shop holding a 3×1.5 m offcut can cut a part its
+    # standard 2.44×1.22 sheet could never hold, and the tube tool already
+    # nests that case. Each sheet in the loop below measures against its own
+    # stock; this is only the gate for "no stock in this job can hold it".
+    stock_dims: List[Tuple[float, float]] = [(spec.usable_width, spec.usable_height)]
+    for _e in extra_sheets:
+        try:
+            _s = spec.resized(_e.width, _e.height)
+        except ValueError:
+            continue                      # smaller than its own margins
+        stock_dims.append((_s.usable_width, _s.usable_height))
     margin = spec.margin
     result = NestResult(spec=spec)
 
@@ -184,7 +219,7 @@ def nest(
         if reason is not None:
             result.invalid.append((part, reason))
             continue
-        if not _fits_sheet(part, uw, uh, allowed):
+        if not any(_fits_sheet(part, uw_, uh_, allowed) for uw_, uh_ in stock_dims):
             result.unplaceable.append(part)
             continue
         catalog[pid] = part
@@ -193,11 +228,17 @@ def nest(
 
     if result.invalid and not catalog and not result.unplaceable:
         raise NestError(
-            "ninguna pieza tiene geometría utilizable para nestear: "
+            "ninguna pieza tiene geometría utilizable para anidar: "
             + "; ".join(result.messages)
         )
 
     parts_total = sum(remaining.values())  # placeable demand
+    gap = spec.part_gap or 0.0
+
+    # Retazo rack: smallest first, so the big offcuts stay free for the big
+    # parts that have nowhere else to go. Each is popped at most once.
+    pool: List[ExtraSheet] = sorted(extra_sheets, key=lambda e: e.area)
+    pool_pos = 0
 
     sheet_index = 0
     while any(v > 0 for v in remaining.values()):
@@ -208,61 +249,112 @@ def nest(
             # is one opaque call with its own time budget.
             raise NestCancelled(result)
 
-        live = [pid for pid in remaining if remaining[pid] > 0]
-        gap = spec.part_gap or 0.0
-        layout = SheetLayout(index=sheet_index, spec=spec)
+        # --- pick this sheet's stock: a retazo while any is left, else a new sheet
+        remnant: Optional[ExtraSheet] = None
+        stock = spec
+        source = NEW_SHEET
+        if pool_pos < len(pool):
+            remnant = pool[pool_pos]
+            try:
+                stock = spec.resized(remnant.width, remnant.height)
+            except ValueError:
+                # Smaller than the margins it would have to carry — unusable as
+                # stock, but still a real piece: leave it on the rack.
+                result.remnants_unused.append(remnant)
+                pool_pos += 1
+                continue
+            source = remnant.label
 
-        # The engine seeds its strip from the queued area; too little area on a
-        # tall strip and the separation offset empties it (Rust panic). Pick a
-        # strip height that cannot trip it — or skip the engine entirely.
-        items_area = sum(remaining[pid] * catalog[pid].outer_area for pid in live)
-        min_h = max(_min_presentable_height(catalog[pid], orient[pid]) for pid in live)
-        strip_h = _safe_strip_height(items_area, uh, gap, min_h)
+        uw, uh = stock.usable_width, stock.usable_height
+        layout = SheetLayout(index=sheet_index, spec=stock, source=source)
 
-        if strip_h is None:
-            if not _shelf_fill(layout, catalog, remaining, orient, uw, uh, margin, gap):
+        # Only parts that fit THIS stock may drive the solve. On a new sheet that
+        # is everything (already prefiltered); on a retazo it is the subset that
+        # fits, which also keeps the strip-height guard from being dominated by a
+        # part this piece could never hold.
+        live = [pid for pid in remaining
+                if remaining[pid] > 0 and _fits_sheet(catalog[pid], uw, uh, orient[pid])]
+
+        if not live and remnant is None:
+            # A new sheet holds nothing that is left, and the rack is spent — so
+            # what remains was only ever placeable on an offcut that is now
+            # gone. Report it as unplaceable (never silently dropped) rather
+            # than opening empty sheets forever.
+            for pid, n in remaining.items():
+                if n > 0:
+                    result.unplaceable.append(replace(catalog[pid], qty=n))
+                    remaining[pid] = 0
+            break
+
+        if live:
+            # The engine seeds its strip from the queued area; too little area on
+            # a tall strip and the separation offset empties it (Rust panic). Pick
+            # a strip height that cannot trip it — or skip the engine entirely.
+            items_area = sum(remaining[pid] * catalog[pid].outer_area for pid in live)
+            min_h = max(_min_presentable_height(catalog[pid], orient[pid]) for pid in live)
+            strip_h = _safe_strip_height(items_area, uh, gap, min_h)
+
+            if strip_h is None:
+                _shelf_fill(layout, catalog, remaining, orient, uw, uh, margin, gap)
+            else:
+                items = [
+                    Item(pid, list(catalog[pid].outer), demand=remaining[pid],
+                         allowed_orientations=(list(orient[pid]) if orient[pid] is not None else None))
+                    for pid in live
+                ]
+                config = StripPackingConfig(
+                    min_items_separation=(spec.part_gap or None),
+                    total_computation_time=max(int(time_per_sheet), 1),
+                    seed=seed + sheet_index,
+                )
+                solution = _solve_strip(
+                    lambda: StripPackingInstance(f"sheet{sheet_index}", strip_h, items), config,
+                    spec=stock, rotation=rotation, items=len(items),
+                    copies=sum(remaining[pid] for pid in live),
+                    strip_height=strip_h, sheet_index=sheet_index,
+                )
+
+                harvested: Dict[str, int] = {}
+                for pi in solution.placed_items:
+                    part = catalog[pi.id]
+                    tx, ty = pi.translation
+                    maxx = _placed_max_x(part.outer, pi.rotation, tx)
+                    if maxx <= uw + _EPS:
+                        layout.placements.append(
+                            Placement(part=part, x=tx + margin, y=ty + margin,
+                                      rotation=pi.rotation)
+                        )
+                        harvested[pi.id] = harvested.get(pi.id, 0) + 1
+
+                for pid, n in harvested.items():
+                    remaining[pid] -= n
+
+        # --- E15: reclaim the holes the strip packer could not see.
+        if nest_in_holes and layout.placements:
+            nest_into_holes(layout, catalog, remaining, orient, gap)
+
+        if not layout.placements:
+            if remnant is not None:
+                # Nothing left fits this offcut. Do not burn it on an empty
+                # sheet — it goes back on the rack and the job moves on.
+                result.remnants_unused.append(remnant)
+                pool_pos += 1
+                continue
+            # New sheet and still nothing: the dense packing oriented everything
+            # past the sheet width. Force one part on so the job progresses.
+            _force_single(layout, catalog, remaining, orient, uw, uh, margin, gap)
+            if not layout.placements:
                 raise NestError(
-                    f"no se pudo acomodar ninguna pieza en una hoja de "
+                    f"no cupo ninguna pieza en una lámina de "
                     f"{spec.width:g}×{spec.height:g} mm con margen {spec.margin:g} mm "
                     f"y separación {gap:g} mm."
                 )
-        else:
-            items = [
-                Item(pid, list(catalog[pid].outer), demand=remaining[pid],
-                     allowed_orientations=(list(orient[pid]) if orient[pid] is not None else None))
-                for pid in live
-            ]
-            config = StripPackingConfig(
-                min_items_separation=(spec.part_gap or None),
-                total_computation_time=max(int(time_per_sheet), 1),
-                seed=seed + sheet_index,
-            )
-            solution = _solve_strip(
-                lambda: StripPackingInstance(f"sheet{sheet_index}", strip_h, items), config,
-                spec=spec, rotation=rotation, items=len(items),
-                copies=sum(remaining[pid] for pid in live),
-                strip_height=strip_h, sheet_index=sheet_index,
-            )
+            if nest_in_holes:
+                nest_into_holes(layout, catalog, remaining, orient, gap)
 
-            harvested: Dict[str, int] = {}
-            for pi in solution.placed_items:
-                part = catalog[pi.id]
-                tx, ty = pi.translation
-                maxx = _placed_max_x(part.outer, pi.rotation, tx)
-                if maxx <= uw + _EPS:
-                    layout.placements.append(
-                        Placement(part=part, x=tx + margin, y=ty + margin, rotation=pi.rotation)
-                    )
-                    harvested[pi.id] = harvested.get(pi.id, 0) + 1
-
-            if not harvested:
-                # Safety net: the dense packing oriented everything past the sheet
-                # width. Force one placeable part onto its own sheet.
-                _force_single(layout, catalog, remaining, orient, uw, uh, margin, gap)
-
-            for pid, n in harvested.items():
-                remaining[pid] -= n
-
+        if remnant is not None:
+            pool_pos += 1
+        layout.leftover = reclaimable_rectangle(layout, gap, min_remnant)
         result.sheets.append(layout)
         sheet_index += 1
 
@@ -279,22 +371,54 @@ def nest(
                 last_sheet_utilization_pct=round(layout.utilization * 100, 2),
             ))
 
+    # The job finished before the rack did — whatever is left was never opened
+    # and is still the shop's to use.
+    result.remnants_unused.extend(pool[pool_pos:])
     return result
+
+
+def reclaimable_rectangle(
+    layout: SheetLayout, gap: float, min_side: float
+) -> Optional[Leftover]:
+    """The rectangle this sheet still has left, or None when nothing is worth it.
+
+    E16's other half: a drop is only scrap if nobody writes down what shape it
+    is. A shop reclaims an offcut by shearing a rectangle off the edge, so the
+    honest candidates are the two guillotine strips a bottom-left nest leaves —
+    the band to the right of the last part, and the band above it. The bigger
+    one wins, and it only counts if both its sides clear ``min_side``.
+
+    Deliberately conservative: it measures from the outermost placed geometry
+    plus one part gap, so the rectangle reported is one the shop can actually
+    cut without touching a part. Pockets *between* parts are real material too,
+    but they are not shearable in one pass, so they stay counted as drop.
+    """
+    if min_side <= 0:
+        return None
+    w, h = layout.spec.width, layout.spec.height
+    if not layout.placements:  # pragma: no cover - an empty sheet is never kept
+        return Leftover(0.0, 0.0, w, h) if min(w, h) >= min_side else None
+
+    max_x = max_y = 0.0
+    for pl in layout.placements:
+        pts = transform(pl.part.outer, pl.rotation, pl.x, pl.y)
+        max_x = max(max_x, max(p[0] for p in pts))
+        max_y = max(max_y, max(p[1] for p in pts))
+
+    candidates = [
+        Leftover(x=max_x + gap, y=0.0, width=w - (max_x + gap), height=h),   # right band
+        Leftover(x=0.0, y=max_y + gap, width=w, height=h - (max_y + gap)),   # top band
+    ]
+    usable = [c for c in candidates
+              if c.width >= min_side and c.height >= min_side]
+    if not usable:
+        return None
+    return max(usable, key=lambda c: c.area)
 
 
 # --------------------------------------------------------------------------- #
 # Geometry helpers
 # --------------------------------------------------------------------------- #
-
-def transform(points: Sequence[Point], deg: float, tx: float, ty: float) -> List[Point]:
-    """Rotate ``points`` about the origin by ``deg`` (CCW), then translate.
-
-    Matches spyrrow's PlacedItem convention (rotation first, translation after).
-    """
-    r = math.radians(deg)
-    c, s = math.cos(r), math.sin(r)
-    return [(x * c - y * s + tx, x * s + y * c + ty) for (x, y) in points]
-
 
 def _solve_strip(instance_factory, config, *, spec: SheetSpec, rotation: str,
                  items: int, copies: int, strip_height: float, sheet_index: int):
@@ -317,11 +441,11 @@ def _solve_strip(instance_factory, config, *, spec: SheetSpec, rotation: str,
         detail = " ".join(str(e).split())[:300] or type(e).__name__
         kind = ("pánico interno del motor" if _is_panic(e) else "error del motor")
         raise NestError(
-            f"{kind} de nido (spyrrow/jagua-rs) en la hoja {sheet_index + 1}: {detail}. "
+            f"{kind} de nido (spyrrow/jagua-rs) en la lámina {sheet_index + 1}: {detail}. "
             f"Parámetros: hoja {spec.width:g}×{spec.height:g} mm, margen {spec.margin:g} mm, "
             f"separación {spec.part_gap:g} mm, rotación '{rotation}', "
             f"franja de {strip_height:g} mm, {items} pieza(s) distinta(s) / {copies} copia(s). "
-            f"Probá bajar la separación (--gap) o el margen, o revisá que los contornos "
+            f"Prueba bajar la separación (--gap) o el margen, o revisa que los contornos "
             f"del DXF cierren sin cruzarse."
         ) from e
 

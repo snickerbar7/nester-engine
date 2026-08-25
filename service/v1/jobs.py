@@ -116,6 +116,14 @@ class SheetJobParams:
     rotate: str = "free"
     time_per_sheet: int = 4
     seed: int = 0
+    # The rack and the two switches that change what a nest is allowed to do:
+    # retazos to spend before buying (E16), parts nested in holes (E15), and the
+    # shortest offcut side still worth reclaiming. `density` (kg/m3) is the
+    # caller's override for what `material` resolves to; None = resolve it (E8).
+    extra_sheets: List[Dict[str, Any]] = field(default_factory=list)
+    nest_in_holes: bool = False
+    min_remnant: float = 0.0
+    density: Optional[float] = None
     qty_regex: Optional[str] = None
     job_name: str = "nest"
     lang: str = "es"
@@ -142,6 +150,11 @@ class Job:
     artifacts: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    # Job-level remarks that are NOT failures: no density resolved, no
+    # thickness, a retazo nothing fitted. They get their own channel because
+    # ``warnings`` means "an artifact could not be produced" and a client that
+    # shows warnings as problems must not show these that way.
+    notes: List[str] = field(default_factory=list)
     error: Optional[str] = None
     cancel: threading.Event = field(default_factory=threading.Event)
 
@@ -172,6 +185,7 @@ def to_body(job: Job) -> Dict[str, Any]:
         },
         "errors": list(job.errors),
         "warnings": list(job.warnings),
+        "notes": list(job.notes),
     }
     if job.result is not None:
         body["result"] = job.result
@@ -201,6 +215,7 @@ def _from_body(body: Dict[str, Any]) -> Job:
         artifacts=list(body.get("artifacts") or []),
         errors=list(body.get("errors") or []),
         warnings=list(body.get("warnings") or []),
+        notes=list(body.get("notes") or []),
         error=body.get("error"),
     )
     # elapsed_s is frozen at what was persisted, not recomputed from a live clock.
@@ -362,7 +377,10 @@ def _run(job: Job) -> None:
         native = engine.nest_sheet(
             p.files, width=p.width, height=p.height, material=p.material,
             thickness=p.thickness, margin=p.margin, gap=p.gap, rotate=p.rotate,
-            time_per_sheet=p.time_per_sheet, seed=p.seed, qty_regex=p.qty_regex,
+            time_per_sheet=p.time_per_sheet, seed=p.seed,
+            extra_sheets=p.extra_sheets, nest_in_holes=p.nest_in_holes,
+            min_remnant=p.min_remnant, density=p.density,
+            qty_regex=p.qty_regex,
             job_name=p.job_name, lang=p.lang, out_prefix=p.out_prefix,
             include_contours=True,
             progress=on_progress,
@@ -382,6 +400,7 @@ def _run(job: Job) -> None:
     job.artifacts = list(native.get("artifacts") or [])
     job.errors = list(native.get("errors") or [])
     job.warnings += [w for w in (native.get("warnings") or []) if w not in job.warnings]
+    job.notes += [n for n in (native.get("notes") or []) if n not in job.notes]
     totals = (job.result or {}).get("totals") or {}
     job.sheets_done = int(totals.get("sheets", job.sheets_done) or 0)
     job.sheets_total_estimate = job.sheets_done

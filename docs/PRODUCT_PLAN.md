@@ -99,16 +99,19 @@ be confidently wrong.
 | # | Gap | Fix |
 |---|-----|-----|
 | E7 | No calibre. | Calibre→mm table (negra / galvanizada differ); accept either everywhere. |
-| E8 | Material-cost estimate. | Profile → kg/m, sheet → kg/m² tables. User sets price (per kg / tramo / sheet); report adds a cost line + per-piece breakdown. **An output line, not a quoting module** — quoting is Harriet. |
+| E8 ◐ | Material-cost estimate. | **2D WEIGHT DONE** — `nester/materials.py` is a density lookup (not an estimator): free-text trade names → kg/m³, whole-word match, RIGHTMOST match wins so "acero inoxidable 430" is 7700 and not 304's 8000. `SheetSpec.density`, `--density` override, `GET /v1/materials`. No known density or no thickness → **no kilos at all**, stated as such; a guessed weight becomes a wrong purchase order. Plan reports kg in parts / to buy / drop. **Still open:** tube kg/m per profile, and the price line on top (user supplies price per kg / tramo / sheet). **An output line, not a quoting module** — quoting is Harriet. |
 | E9 ✅ | One stock length per profile. | **DONE** — `StockSpec.extra_stock` takes the shop's remnants; FFD opens the smallest fitting retazo before buying a tramo (each usable once). Plan splits `new_bars_needed` from total bars, names the retazos used, draws mixed lengths. `/v1/nest` takes `extra_stock: [{profile, length_mm, label}]`; Harriet contract untouched. |
 | E11 | Stock catalog is implicit. | Mexican stock catalog as data (PTR sizes, calibres, lámina 4x8/4x10/5x10, tramo 6 m); pre-fills jobs; the AI reads it. |
+| E15 ✅ | 2D nesting could not place parts inside other parts' holes — jagua-rs packs *simple* polygons, so a 300 mm bore in a flange was solid material to the solver and left the shop as skeleton. The plan had to say so in print. | **DONE** — `nester/sheet/holes.py`: a second pass after each sheet is solved. Each hole (shrunk by the job's part gap) becomes a container; still-unplaced parts are tried against it on a bounded translation grid with exact shapely containment, biggest region and biggest part first, one level deep, first-fit. It only APPENDS, so it can never make a sheet worse. **Off by default** — the parts come out inside a slug, so it changes what the operator does: every copy carries `Placement.in_hole_of`, gets its own `EN BARRENO` row on the sheet list, and the plan's card becomes an instruction ("no lo tires con el esqueleto") instead of a limitation. Measured on a real job: sheet utilization 40.9% → 74.3%. |
+| E16 ✅ | Sheet offcuts were dead: the shop's rack could not feed a job, and a job's own leftover was written off as an anonymous number. | **DONE**, both halves. *In:* `extra_sheets` / `--remnant WxH[:LABEL]` — a finite rack, each piece used once, spent SMALLEST-first so big offcuts stay free for big parts (the E9 rule). Sheets in a job may now differ in size: each `SheetLayout` owns its `spec` + `source`, and every area/weight total sums the layouts. Plan splits `new_sheets_needed` from total sheets. A retazo nothing fits is never burned on an empty sheet (`remnants_unused`). "Too big to nest" is now measured against the LARGEST stock on offer, so a part only the big offcut can hold still lands. *Out:* `--min-remnant` reports what each sheet has LEFT as a real shearable rectangle (`sheets[].leftover`, `reclaimable[]`), drawn on the sheet page — ready to book into the retazo inventory the web product already has. |
 
 ### Tier 2 — breadth, after first paying users
 
 STEP input (E12, needs `cadquery-ocp` ~1GB → Render, never Vercel) · DXF beyond
 the Fusion layer convention (E13) · mixed material/thickness per job (E10) ·
-DWG (E14) · part-in-hole (E15) · remnant inventory (E16) · last-sheet re-nest
-(E17) · FFD swap pass (E18) · per-part grain via API (E19) · warn gap<kerf (E20).
+DWG (E14) · last-sheet re-nest (E17) · FFD swap pass (E18) · per-part grain via
+API (E19) · warn gap<kerf (E20). *(E15 and E16 were here; both shipped
+2026-08-25 — see Tier 1.)*
 
 ---
 
@@ -208,6 +211,23 @@ hook); a clear statement of what happens to their files.
 > loop, the cancel button and the SVG nest view. Next engine contracts, in
 > order: angle/bisel detection, E8 weight, mixed placas (E13), STEP (E12).
 >
+> **The three "el motor no hace" cards are gone, 2026-08-25.** The sheet plan
+> printed a panel titled *lo que el motor 2D todavía no hace* with exactly three
+> items — holes not nested into, leftover not tracked as remnant stock, and no
+> kilos. All three are now capabilities with options behind them: **E15**
+> (`nest_in_holes`, off by default because the parts come out inside a slug),
+> **E16** (`extra_sheets` in, `min_remnant` out — the rack feeds the job and the
+> job feeds the rack back), and **E8's 2D half** (`nester/materials.py`, a
+> density LOOKUP; unknown material or missing thickness still means no kilos,
+> stated plainly). The plan's cards changed character with them: a limitation
+> card now only appears when the option is OFF for that run, and when it is on
+> the card becomes an instruction to the operator. Engine-side that is a new
+> `nester/materials.py`, a new `nester/sheet/holes.py`, per-sheet stock on
+> `SheetLayout` (sheets in one job may differ in size), and `notes[]` split from
+> `warnings[]` in the service so "no density" never reads as "artifact failed".
+> Next: wire all three into the web product (the design round below), then tube
+> kg/m (E8's other half) and the price line.
+>
 > **E21 — engine panic containment, 2026-08-24.** A real customer 2D job died
 > in ~1 s with a raw `pyo3_runtime.PanicException` out of jagua-rs. Root cause
 > was *not* the thin solera it looked like: jagua-rs seeds its strip rectangle
@@ -255,4 +275,5 @@ future paid differentiator. Anything quoting-shaped ships in Harriet.
 ### What NOT to build here, ever
 
 Quoting workflow, factura/PAC, customer/price management — Harriet. And not
-yet: remnant inventory, part-in-hole, DWG, solver optimality, WhatsApp.
+yet: DWG, solver optimality, WhatsApp. *(Sheet remnant inventory and
+part-in-hole were on this list and came off it 2026-08-25 — E16 and E15.)*

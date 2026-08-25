@@ -14,6 +14,30 @@ A nesting tool with **two modes**:
 one **Python 3.13** venv at `.venv` (migrated up from 3.9 so the flat-nesting
 engine `spyrrow` — which needs 3.11+ — shares the env with the tube tool).
 
+## How work runs here: dispatch, then audit (READ)
+
+**Don't do the changes inline.** This session orchestrates; agents do the work.
+
+| Grade | Model | For |
+|-------|-------|-----|
+| **Thinking / finding** | quality model (**Opus 5**), effort **high or xhigh** | research, root-cause hunts, "what's wrong with this", auditing a design, choosing an approach |
+| **Executing** | **Sonnet** | implementing what the thinkers found, and any mechanical work — but the brief must be EXPLICIT: exact files, exact contract, what NOT to touch, how to verify |
+
+Then **this session audits every agent's output** — read the diff, run the
+gates, decide whether it's actually right. An agent's report is input, not a
+verdict. (Real example: on the E15/E16/E8 round the test agent surfaced three
+genuine bugs, and the service agent routed job notes into `warnings[]`, which
+would have changed Harriet's frozen contract. Both only landed correctly
+because of the audit.)
+
+Run agents in parallel only over **non-overlapping file sets** — never two
+agents in one working tree.
+
+**All UI goes through Claude Design.** Never design or restyle UI here, and
+never publish UI artifacts. When a change implies UI, the deliverable from this
+repo is the **engine contract + a design brief/prompt**; Marlon runs the canvas
+session, and the handoff comes back through `/design-round`.
+
 ## Your role: be the UI layer
 
 The user drives this conversationally. They prompt ("nest these files, 6 m stock,
@@ -223,6 +247,47 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   Grain-lock for brushed finish or bend-grain parts.
 - **Spacing**: `--margin` (edge) + `--gap` (part-to-part, keep ≥ kerf →
   spyrrow `min_items_separation`). Kerf compensation itself is the CAM's job.
+- **Retazos de lámina (E16)**: the shop's sheet offcuts are extra stock. Pass
+  them with `--remnant WxH[:LABEL]` (repeatable; label defaults to `R-000n`,
+  must be unique) — or `extra_sheets: [{width_mm, height_mm, label}]` on
+  `POST /v1/jobs`. A finite pool: each piece is usable **once**, and the solver
+  spends the **smallest fitting** one before buying a new sheet (big retazos
+  stay free for big parts — same rule as 1D). Sheets in one job therefore need
+  not be the same size: every `SheetLayout` carries its own `spec` + `source`,
+  and area/weight totals SUM the layouts instead of multiplying a count. The
+  plan reports `new_sheets_needed` (what to BUY) separately from total sheets,
+  names every retazo consumed, and draws each sheet at its own size. A retazo
+  nothing fits is never burned on an empty sheet — it lands in
+  `remnants_unused` and stays on the rack. "Too big to nest at all" is measured
+  against the **largest** stock on offer, so a part that only the big offcut
+  can hold still lands.
+- **Sobrante recuperable (E16, other half)**: `--min-remnant MM` (CLI default
+  200; API default 0) reports what each sheet has LEFT as a rectangle — the
+  larger of the two guillotine bands a bottom-left nest leaves (right of the
+  last part, or above it), gap already respected, both sides ≥ the minimum. It
+  is drawn on the sheet page and emitted as `sheets[].leftover` +
+  `reclaimable[]` so it can be booked straight into a retazo inventory instead
+  of written off. Pockets *between* parts are real material but are not
+  shearable in one pass, so they stay counted as drop.
+- **Piezas en barrenos (E15)**: `--nest-in-holes` runs a second pass that fills
+  already-placed parts' holes with still-unplaced parts (`nester/sheet/holes.py`,
+  shapely). jagua-rs packs *simple* polygons — a 300 mm hole is solid material
+  to it — so this is our own bounded search: candidate translations on a grid,
+  exact containment, clearance = the job's part gap, one level deep, first-fit
+  (not an optimum). It only ever APPENDS, so enabling it cannot make a sheet
+  worse. **Off by default** because it has a machine consequence: those parts
+  come out inside a slug, so the plan flags each one (`Placement.in_hole_of`),
+  gives them their own `EN BARRENO` row in the sheet's part list, and tells the
+  operator not to bin the slug with the skeleton.
+- **Kilos (E8, 2D)**: `nester/materials.py` is a density **lookup, not an
+  estimator**. `--material` resolves free-text Spanish/English trade names
+  ("acero inoxidable 304", "lámina negra", "aluminio 6061", "galvanizada") to
+  kg/m³; `--density KG_M3` overrides for an alloy the table doesn't know.
+  Matching is whole-word and the **rightmost** match wins (a trade name narrows
+  left to right, so "acero inoxidable **430**" is 7700, not 304's 8000). With
+  no known density OR no thickness the plan reports **no kilos at all** and says
+  why — never a guessed one, because an invented kilo figure becomes a wrong
+  purchase order. `weight = area × thickness × density`.
 - **Output**: cut-plan PDF + `_nido.json` + **one nested DXF per sheet**
   (`_S01.dxf`, layers preserved) for the shop's CAM.
 
@@ -230,6 +295,7 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
 .venv/bin/python -m nester.sheet <dxf files|dir> \
   --sheet 2440x1220 --material acero --thickness 2 \
   --margin 8 --gap 3 --rotate free --time 4 \
+  --remnant 1220x600:R-0007 --nest-in-holes --min-remnant 200 \
   --out output --name <job> --lang es
 ```
 
@@ -244,10 +310,10 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   interruption is impossible — one spyrrow solve is an opaque, time-budgeted
   call. The async jobs API is the only caller.
 
-MVP limits: one material/thickness per job; holes are drawn/preserved but not
-nested-into (engine has no part-in-hole support); remnants reported as leftover
-area, not tracked as reusable inventory; nesting is stochastic within `--time`
-(yield varies with time budget + `--seed`; try a couple of seeds for production).
+Remaining limits: one material/thickness per job; nesting is stochastic within
+`--time` (yield varies with the time budget even at a fixed `--seed`, because
+the budget is wall-clock — try a couple of seeds for production); hole nesting
+and retazo consumption are both greedy first-fit, not optimal.
 
 ## File map
 
@@ -261,9 +327,11 @@ area, not tracked as reusable inventory; nesting is stochastic within `--time`
 | PDF + JSON output (+ parts guide, ruler, colors) | `nester/tube/report.py` |
 | IGES nest-layout output (3D wireframe) | `nester/tube/iges_nest.py` |
 | **Solid** STEP/IGES output (real part bodies) | `solid_nest.py` (runs under `.venv-cad`, OpenCASCADE) |
-| **Flat (2D)** — data model (FlatPart, SheetSpec, Placement, NestResult) | `nester/sheet/model.py` |
+| **Material densities** — trade-name → kg/m³ (shared, drives all weights) | `nester/materials.py` |
+| **Flat (2D)** — data model (FlatPart, SheetSpec, ExtraSheet, Leftover, Placement, NestResult) | `nester/sheet/model.py` |
 | DXF reader (contours + holes, layer-classified) | `nester/sheet/dxf_read.py` |
-| Irregular nester (spyrrow wrapper + multi-sheet fill, progress/cancel) | `nester/sheet/pack.py` |
+| Irregular nester (spyrrow wrapper + multi-sheet fill, retazo pool, progress/cancel) | `nester/sheet/pack.py` |
+| Part-in-hole second pass (shapely containment search) | `nester/sheet/holes.py` |
 | Part silhouettes for the API (decimation, holes, origin) | `nester/sheet/contour.py` |
 | PDF + JSON output (portada + a drawing sheet per lámina, real silhouettes) | `nester/sheet/report.py` |
 | Nested DXF-per-sheet output | `nester/sheet/dxf_out.py` |
@@ -323,6 +391,22 @@ Body = the `/v1/nest` envelope + sheet stock (`sheet_width_mm`,
 `rotate`, `time_per_sheet_s`, `seed`), `mode` must resolve to sheet, and
 `out_prefix` is **required** (artifacts *and* the job record land under it).
 Statuses: `queued · running · done · error · cancelled · lost`.
+
+The 2D engine options ride the same body, all optional and all defaulting to
+today's behaviour: `extra_sheets: [{width_mm, height_mm, label}]` (retazos,
+≤200, unique labels case-insensitively, 422 otherwise), `nest_in_holes` (bool),
+`min_remnant_mm` (≥0), `density_kg_m3` (>0; overrides what `material`
+resolves to). **`GET /v1/materials`** returns the density catalog, and
+`?name=` resolves one free-text name — `resolved: null` is a real answer
+meaning "cannot be weighed", which is what keeps the AI from inventing a
+density (the product rule is that the AI never produces a number).
+
+A job carries **`notes[]` alongside `warnings[]`**, and the distinction is
+load-bearing: `warnings` means "an artifact could not be produced" (E4) and
+Harriet's frozen `/nest` reads it, whereas `notes` are job remarks that are not
+failures — no density resolved, no thickness, a retazo nothing fitted. Anything
+in `notes` is also recoverable structurally (`params.density_kg_m3` is null,
+`result.remnants_unused[]`), so a client never has to parse Spanish prose.
 
 The shape of the implementation is dictated by the deployment: **one Render
 instance, no database** (`service/v1/jobs.py` — read its docstring before

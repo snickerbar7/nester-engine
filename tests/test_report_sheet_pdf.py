@@ -118,7 +118,7 @@ def test_single_sheet_job_still_gets_its_drawing_sheet(tmp_path):
 def test_cover_carries_the_designed_panels(tmp_path):
     _, pages, _ = _pdf(tmp_path, _nest())
     cover = pages[0]
-    for k in ("RESUMEN DE COMPRA", "CÓMO QUEDÓ CADA HOJA", "PIEZAS DEL TRABAJO",
+    for k in ("RESUMEN DE COMPRA", "CÓMO QUEDÓ CADA LÁMINA", "PIEZAS DEL TRABAJO",
               "CUENTAS DEL MATERIAL", "PARÁMETROS DEL ANIDADO",
               "ANTES DE CORTAR", "FIRMAS"):
         assert k in cover, k
@@ -181,7 +181,7 @@ def test_each_drawing_sheet_reports_its_own_numbers(tmp_path):
     for i, layout in enumerate(result.sheets, start=1):
         page = pages[i]
         for k in ("APROVECHAMIENTO", "PIEZAS", "ÁREA EN PIEZAS", "SOBRANTE",
-                  "PIEZAS DE ESTA HOJA", "PARA EL OPERADOR", "CONTROL DE CORTE"):
+                  "PIEZAS DE ESTA LÁMINA", "PARA EL OPERADOR", "CONTROL DE CORTE"):
             assert k in page, (i, k)
         assert f"{layout.utilization * 100:.1f} %" in page
         assert f"{layout.used_area / 1e6:,.3f} m²" in page
@@ -218,6 +218,24 @@ def _linetos(reader, page_index):
     return len(re.findall(r"\bl\b", _ops(reader, page_index)))
 
 
+def _shape_subpaths(reader, page_index):
+    """Subpaths in the richest even-odd path on the page — the placed part.
+
+    A part WITH a hole reaches the page as one path carrying TWO subpaths (outer
+    + hole, filled even-odd so the sheet shows through); a part without a hole
+    carries one. Counting subpaths says exactly that, and unlike counting line
+    segments it does not move when the drawing is laid out a little smaller —
+    contour flattening is scale-derived, so a segment-count ratio silently
+    tracks page layout instead of geometry.
+    """
+    paths = re.findall(r"[\d.]+ [\d.]+ [\d.]+ rg\s(.*?)B\*",
+                       _ops(reader, page_index), re.S)
+    if not paths:
+        return 0
+    richest = max(paths, key=lambda seg: len(re.findall(r"\bl\b", seg)))
+    return len(re.findall(r"\bm\b", richest))
+
+
 def test_parts_are_drawn_as_real_silhouettes_not_rectangles(tmp_path):
     """A ring nested on a sheet must reach the page as a many-segment path with
     a second subpath for its hole — a bounding rectangle would be 4 lines."""
@@ -239,7 +257,12 @@ def test_holes_are_not_drawn_when_the_part_has_none(tmp_path):
     without = NestResult(spec=SPEC, sheets=[_layout(0, [(solid, 300, 300, 0.0)])])
     a, _, _ = _pdf(tmp_path / "a", with_hole)
     b, _, _ = _pdf(tmp_path / "b", without)
-    assert _linetos(a, 1) > _linetos(b, 1) * 1.8
+    assert _shape_subpaths(a, 1) == 2          # outer + hole
+    assert _shape_subpaths(b, 1) == 1          # outer only
+    # both still reach the page as real silhouettes: a bounding box would be
+    # four lines, so anything in the dozens is the flattened circle itself
+    assert _linetos(a, 1) > 100        # 64-gon outer + 64-gon hole
+    assert _linetos(b, 1) > 20         # one 64-gon, no hole
 
 
 def test_rotated_placements_are_drawn_rotated(tmp_path):
@@ -289,11 +312,70 @@ def test_caller_warnings_reach_the_paper_and_the_json(tmp_path):
     assert "nested DXF-per-sheet not written" in pages[0]
 
 
-def test_engine_limits_are_stated_honestly(tmp_path):
+def test_engine_limits_are_stated_when_the_options_are_off(tmp_path):
+    """A limitation card is about THIS run, not about the engine forever.
+
+    With hole nesting off, no minimum remnant and no density, the plan says all
+    three plainly — and each card points at the switch that removes it.
+    """
     _, pages, _ = _pdf(tmp_path, _nest())
     cover = pages[0]
-    assert "Los barrenos no se aprovechan" in cover
+    assert "Los barrenos de este trabajo no se aprovecharon" in cover
     assert "El sobrante no entra al inventario" in cover
+    assert "Sin kilos en este trabajo" in cover
+
+
+def test_hole_nesting_turns_the_limit_into_an_instruction(tmp_path):
+    """Once parts are nested into holes, the card must tell the operator what
+    to DO with the slug — and must stop claiming the engine cannot do it."""
+    result = _nest(sheets=1)
+    sheet = result.sheets[0]
+    # a small part cut out of the ring's bore
+    sheet.placements.append(
+        Placement(part=PLACA, x=180, y=180, rotation=0.0, in_hole_of=0))
+    meta = dict(META, nest_in_holes=True)
+    written = write_reports(result, str(tmp_path), "job", meta)
+    pages = [p.extract_text() for p in
+             pypdf.PdfReader([w for w in written if w.endswith(".pdf")][0]).pages]
+    cover, drawing = pages[0], pages[1]
+    assert "salen dentro del barreno de otra" in cover
+    assert "NO es chatarra" in cover
+    assert "Los barrenos de este trabajo no se aprovecharon" not in cover
+    # the operator's copy of the instruction lives on the drawing sheet
+    assert "no lo tires con el esqueleto" in drawing
+    # flagged in that sheet's part list, as its own row. The marker must be a
+    # WORD: the base-14 PDF fonts are WinAnsi-encoded and silently drop an
+    # arrow glyph, which is exactly how this was caught.
+    assert "EN BARRENO" in drawing
+
+
+def test_reclaimable_leftover_replaces_the_untracked_drop_card(tmp_path):
+    from nester.sheet.model import Leftover
+    result = _nest(sheets=1)
+    result.sheets[0].leftover = Leftover(x=1900, y=0, width=540, height=1220)
+    meta = dict(META, min_remnant=200)
+    written = write_reports(result, str(tmp_path), "job", meta)
+    pages = [p.extract_text() for p in
+             pypdf.PdfReader([w for w in written if w.endswith(".pdf")][0]).pages]
+    cover = pages[0]
+    assert "Sobrante recuperable" in cover
+    assert "El sobrante no entra al inventario" not in cover
+
+
+def test_weights_appear_once_the_material_has_a_density(tmp_path):
+    spec = SheetSpec(width=2440, height=1220, material="Lámina negra",
+                     thickness=2, margin=8, part_gap=3, density=7850)
+    result = _nest(sheets=1)
+    result.spec = spec
+    for s in result.sheets:
+        s.spec = spec
+    written = write_reports(result, str(tmp_path), "job", META)
+    pages = [p.extract_text() for p in
+             pypdf.PdfReader([w for w in written if w.endswith(".pdf")][0]).pages]
+    cover = pages[0]
+    assert "Sin kilos en este trabajo" not in cover
+    assert "kg" in cover
+    assert "7,850 kg/m³" in cover               # the density is shown, not hidden
 
 
 # --------------------------------------------------------------------------- #
@@ -341,6 +423,6 @@ def test_a_job_where_nothing_fits_still_produces_an_honest_plan(tmp_path):
     nothing = NestResult(spec=SPEC, sheets=[], unplaceable=[GIGANTE])
     reader, pages, _ = _pdf(tmp_path, nothing)
     assert len(reader.pages) == 1
-    assert "Ninguna pieza se pudo colocar" in pages[0]
+    assert "Ninguna pieza cupo en la lámina" in pages[0]
     assert "Panel_Gigante" in pages[0]
     assert "0.000 m²" in pages[0]

@@ -1,6 +1,9 @@
 """Routes for the neutral `/v1` contract.
 
   GET    /v1/health      -> liveness
+  GET    /v1/materials   -> the density table (+ `?name=` resolves one free-text
+                            material name), so a client knows which jobs can be
+                            weighed instead of guessing a density
   POST   /v1/extract     -> geometry -> parts (tube or sheet; deterministic).
                             Sheet parts carry their REAL contour (outer + holes)
                             so a client can draw the silhouette, not a rectangle.
@@ -34,6 +37,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from nester.materials import find_material, known_materials
 from nester.sheet.pack import ROTATION_MODES
 from nester.tube.profile import DEFAULT_PROFILE_REGEX, DEFAULT_QTY_REGEX, MAX_SETS
 
@@ -86,6 +90,23 @@ class ExtraStockRef(BaseModel):
     label: str = Field(..., description="the shop's id for that piece (R-0001)")
 
 
+# A sanity bound on the retazo rack, not a solver limit: a request carrying more
+# offcuts than this is a mistake upstream, and each one is a sheet to solve.
+MAX_EXTRA_SHEETS = 200
+
+
+class ExtraSheetRef(BaseModel):
+    """One sheet offcut (retazo) offered to a sheet nest as extra stock — E16.
+
+    The 2D twin of :class:`ExtraStockRef`. There is no ``profile``: a sheet job
+    is one material/thickness group, so every piece offered belongs to it.
+    """
+
+    width_mm: float = Field(..., description="the piece's real width in mm")
+    height_mm: float = Field(..., description="the piece's real height in mm")
+    label: str = Field(..., description="the shop's id for that piece (R-0007)")
+
+
 class NestRequest(BaseModel):
     files: List[FileRef]
     mode: str = Field("auto", description="tube | sheet | auto (sheet -> 501)")
@@ -112,7 +133,9 @@ class JobRequest(NestRequest):
     """A 2D sheet nest, submitted for async execution.
 
     Same envelope as `POST /v1/nest` (files, regexes, job_name, lang) plus the
-    sheet stock parameters, with two differences that are structural, not
+    sheet stock parameters, the retazo rack (`extra_sheets`) and the switches
+    that change what the nest may do (`nest_in_holes`, `min_remnant_mm`,
+    `density_kg_m3`), with two differences that are structural, not
     stylistic: `mode` must be sheet (tube is synchronous), and `out_prefix` is
     REQUIRED — it is both where the artifacts land and where the job's durable
     status record (`<out_prefix>/_job.json`) is written.
@@ -130,6 +153,29 @@ class JobRequest(NestRequest):
     rotate: str = Field("free", description="free | grain | fixed | ortho")
     time_per_sheet_s: int = Field(4, description="compute budget per sheet (seconds)")
     seed: int = Field(0, description="RNG seed — same seed, same nest")
+    extra_sheets: List[ExtraSheetRef] = Field(
+        default_factory=list,
+        description="retazos on the rack; the nest spends them (smallest first) "
+                    "before buying a new sheet. Ones it never opens come back "
+                    "under result.remnants_unused — that is information, not an "
+                    f"error. At most {MAX_EXTRA_SHEETS} per job.")
+    nest_in_holes: bool = Field(
+        False,
+        description="also nest small parts INSIDE the holes of placed parts. Off "
+                    "by default: those parts come out inside a slug, so the "
+                    "operator has to be told (the plan says so, and every such "
+                    "placement carries in_hole_of).")
+    min_remnant_mm: float = Field(
+        0.0,
+        description="shortest side worth reclaiming from a sheet's leftover; each "
+                    "sheet then reports that rectangle as a retazo candidate. "
+                    "0 (default) turns the reporting off.")
+    density_kg_m3: Optional[float] = Field(
+        None,
+        description="material density override, for an alloy the table does not "
+                    "know. Omit and it is resolved from `material` (see "
+                    "GET /v1/materials); with neither, the result simply carries "
+                    "no weights — the service never invents a density.")
 
 
 class UploadFileRequest(BaseModel):
@@ -180,6 +226,42 @@ def _validate_extra_stock(entries: List[ExtraStockRef]) -> List[Dict[str, Any]]:
     return out
 
 
+def _validate_extra_sheets(entries: List[ExtraSheetRef]) -> List[Dict[str, Any]]:
+    """Reject unusable retazos de lámina (422). Same rules as `extra_stock`, plus
+    one the 2D rack needs: labels must be UNIQUE.
+
+    The label is exactly what the plan tells the operator to fetch, so two pieces
+    answering to "R-7" is a picking error waiting to happen — and each retazo is
+    one physical piece the solver may spend only once, so a repeated label is
+    ambiguous to the engine too. Compared case-insensitively: a rack tag is a
+    rack tag whether it was typed R-7 or r-7.
+    """
+    if len(entries) > MAX_EXTRA_SHEETS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"extra_sheets: at most {MAX_EXTRA_SHEETS} entries, got {len(entries)}")
+    out: List[Dict[str, Any]] = []
+    seen: Dict[str, str] = {}
+    for e in entries:
+        label = e.label.strip()
+        if not label:
+            raise HTTPException(status_code=422, detail="extra_sheets: label must not be empty")
+        if e.width_mm <= 0 or e.height_mm <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail=f"extra_sheets {label!r}: width_mm and height_mm must be > 0, "
+                       f"got {e.width_mm:g}x{e.height_mm:g}")
+        first = seen.get(label.casefold())
+        if first is not None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"extra_sheets: label {label!r} repeats {first!r} — each retazo "
+                       "is one physical piece, picked off the rack by that label")
+        seen[label.casefold()] = label
+        out.append({"width_mm": e.width_mm, "height_mm": e.height_mm, "label": label})
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------------- #
@@ -188,6 +270,34 @@ def _validate_extra_stock(entries: List[ExtraStockRef]) -> List[Dict[str, Any]]:
 def health() -> Dict[str, object]:
     return {"ok": True, "service": "nester", "contract": "v1",
             "r2": bool(os.environ.get("R2_BUCKET_NAME"))}
+
+
+@router.get("/materials")
+def materials(
+    name: Optional[str] = Query(
+        None, description="a free-text material name to resolve ('lámina inox 304')"),
+    client: Client = Depends(require_client),
+) -> Dict[str, Any]:
+    """The density table: which material names the engine can weigh a job with.
+
+    The product rule is that the AI never produces a number. So it does not
+    guess a density — it either finds the material here (or the operator gives
+    `density_kg_m3` on the job) and the plan reports kilos, or it says plainly
+    that this job cannot be weighed. `?name=` answers that for one free-text
+    name without submitting a job: `resolved` is null when nothing matches,
+    which is a real answer, not an error.
+    """
+    body: Dict[str, Any] = {"materials": [
+        {"key": key, "label": label, "density_kg_m3": density}
+        for key, label, density in known_materials()
+    ]}
+    if name is not None:
+        found = find_material(name)
+        body["query"] = name
+        body["resolved"] = (
+            {"key": found.key, "label": found.label, "density_kg_m3": found.density}
+            if found else None)
+    return body
 
 
 @router.post("/extract")
@@ -278,12 +388,27 @@ def create_job(req: JobRequest, client: Client = Depends(require_client)) -> Dic
                    f"{req.sheet_width_mm:g}x{req.sheet_height_mm:g}mm sheet")
     if req.time_per_sheet_s < 1:
         raise HTTPException(status_code=422, detail="time_per_sheet_s must be >= 1")
+    if req.min_remnant_mm < 0:
+        raise HTTPException(
+            status_code=422,
+            detail="min_remnant_mm must be >= 0 (0 = don't report reclaimable offcuts)")
+    # A density is either a real number or absent. Zero/negative is neither: it
+    # would silently mean "no kilos", which is not what a caller who typed a
+    # density meant.
+    if req.density_kg_m3 is not None and req.density_kg_m3 <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail=f"density_kg_m3 must be > 0, got {req.density_kg_m3:g}. Omit it "
+                   "to resolve the density from `material` instead.")
+    extra_sheets = _validate_extra_sheets(req.extra_sheets)
 
     job = jobs.submit(client.client_id, jobs.SheetJobParams(
         files=files, width=req.sheet_width_mm, height=req.sheet_height_mm,
         material=req.material, thickness=req.thickness_mm, margin=req.margin_mm,
         gap=req.gap_mm, rotate=req.rotate, time_per_sheet=req.time_per_sheet_s,
-        seed=req.seed, qty_regex=req.qty_regex, job_name=req.job_name,
+        seed=req.seed, extra_sheets=extra_sheets, nest_in_holes=req.nest_in_holes,
+        min_remnant=req.min_remnant_mm, density=req.density_kg_m3,
+        qty_regex=req.qty_regex, job_name=req.job_name,
         lang=req.lang, out_prefix=req.out_prefix,
     ))
     # "queued" is the ACK of acceptance, not a live read: with a free worker the

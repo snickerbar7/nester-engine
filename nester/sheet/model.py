@@ -4,15 +4,46 @@ All coordinates are in millimetres (the DXF reader normalizes via the file's
 INSUNITS flag). This module is deliberately dependency-free — plain geometry
 math (shoelace area, bounding box) so it is trivial to unit-test, exactly like
 ``nester.tube.model``. Shapely/spyrrow live in the reader and packer, not here.
+
+Three things beyond a plain nest live here because the shop asks for them by
+name:
+
+* **Retazos de lámina** (E16) — :class:`ExtraSheet` is a physical offcut on the
+  rack, consumed at most once, and a :class:`SheetLayout` records which stock it
+  was cut from via ``source``. Sheets in one job therefore need not be the same
+  size, so every area total sums the layouts instead of multiplying a count.
+* **Sobrante recuperable** (E16) — :class:`Leftover` is the rectangle a sheet
+  still has left, so the drop stops being an anonymous number and becomes the
+  next job's retazo.
+* **Piezas en barrenos** (E15) — a :class:`Placement` cut out of another part's
+  hole carries ``in_hole_of``, because the operator has to know that slug is not
+  scrap.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
 
+from ..materials import weight_kg
+
 Point = Tuple[float, float]
 Contour = Tuple[Point, ...]  # ordered ring of vertices (not necessarily closed)
+
+#: ``SheetLayout.source`` for a full sheet the shop has to buy.
+NEW_SHEET = "nueva"
+
+
+def transform(points: Sequence[Point], deg: float, tx: float, ty: float) -> List[Point]:
+    """Rotate ``points`` about the origin by ``deg`` (CCW), then translate.
+
+    Matches spyrrow's PlacedItem convention (rotation first, translation after),
+    which is how every :class:`Placement` in this package is to be reconstructed.
+    """
+    r = math.radians(deg)
+    c, s = math.cos(r), math.sin(r)
+    return [(x * c - y * s + tx, x * s + y * c + ty) for (x, y) in points]
 
 
 def polygon_area(ring: Sequence[Point]) -> float:
@@ -82,6 +113,58 @@ class FlatPart:
 
 
 @dataclass(frozen=True)
+class ExtraSheet:
+    """A leftover piece of sheet (retazo) offered to the nest as extra stock — E16.
+
+    The 2D twin of ``nester.tube.model.ExtraStock``. ``label`` is the shop's
+    identifier for that physical piece ("R-0007"), which is what the cut plan
+    tells the operator to pull off the rack, so it must be unique within a job.
+    Each piece is consumed at most once.
+
+    A retazo is assumed rectangular — that is how sheet offcuts are actually
+    stored and sheared. An irregular offcut has to be squared before it goes on
+    the rack anyway.
+    """
+
+    width: float
+    height: float
+    label: str
+
+    def __post_init__(self) -> None:
+        if self.width <= 0 or self.height <= 0:
+            raise ValueError(
+                f"{self.label}: remnant sheet must be > 0 in both axes, "
+                f"got {self.width}x{self.height}"
+            )
+        if not self.label.strip():
+            raise ValueError("remnant sheet label must not be empty")
+
+    @property
+    def area(self) -> float:
+        return self.width * self.height
+
+
+@dataclass(frozen=True)
+class Leftover:
+    """The rectangle a sheet still has left over — a retazo candidate (E16).
+
+    Position is absolute sheet coordinates (mm), origin bottom-left, so the plan
+    can draw it and the shop can shear exactly that piece and put it back on the
+    rack. It is what the sheet has left AFTER the part gap is respected, so it
+    is a piece that can really be cut, not a bookkeeping remainder.
+    """
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+    @property
+    def area(self) -> float:
+        return self.width * self.height
+
+
+@dataclass(frozen=True)
 class SheetSpec:
     """One rectangular stock sheet definition + nesting allowances.
 
@@ -90,6 +173,11 @@ class SheetSpec:
     minimum spacing between adjacent parts (kept >= kerf so cut lines never
     overlap). ``material``/``thickness`` define the stock group — parts of
     different material or thickness are never nested together.
+
+    ``density`` (kg/m3) is what makes kilos possible (E8). Zero means the
+    material was not recognized and no density was supplied: every weight then
+    reads 0.0 and the report says it cannot weigh the job rather than inventing
+    a number. Resolve it with :func:`nester.materials.density_for`.
     """
 
     width: float               # sheet extent in X (mm)
@@ -98,6 +186,7 @@ class SheetSpec:
     thickness: float = 0.0
     margin: float = 0.0        # edge margin, all four sides (mm)
     part_gap: float = 0.0      # minimum part-to-part spacing (mm)
+    density: float = 0.0       # kg/m3; 0 = unknown, weights unavailable
 
     def __post_init__(self) -> None:
         if self.usable_width <= 0 or self.usable_height <= 0:
@@ -118,6 +207,24 @@ class SheetSpec:
         return self.width * self.height
 
     @property
+    def can_weigh(self) -> bool:
+        """True when this stock has both a thickness and a known density."""
+        return self.thickness > 0 and self.density > 0
+
+    @property
+    def weight_kg(self) -> float:
+        """Mass of one full sheet of this stock (kg); 0.0 when unknown."""
+        return weight_kg(self.area, self.thickness, self.density)
+
+    def resized(self, width: float, height: float) -> "SheetSpec":
+        """Same stock and allowances, different sheet size — used for retazos."""
+        return SheetSpec(
+            width=width, height=height, material=self.material,
+            thickness=self.thickness, margin=self.margin,
+            part_gap=self.part_gap, density=self.density,
+        )
+
+    @property
     def key(self) -> str:
         """Stock group key: parts only nest together within one key."""
         mat = self.material or "?"
@@ -132,21 +239,43 @@ class Placement:
     then the part is translated by ``(x, y)`` — matching spyrrow's PlacedItem
     convention. ``x``/``y`` are absolute sheet coordinates (mm), including the
     sheet margin offset already added in.
+
+    ``in_hole_of`` is set when this copy was nested INSIDE another part's hole
+    (E15): it holds the index, within the same ``SheetLayout.placements``, of
+    the part whose hole hosts it. The operator has to know — that slug is a
+    part, not a drop, and it must not be thrown away with the skeleton.
     """
 
     part: FlatPart
     x: float
     y: float
     rotation: float = 0.0
+    in_hole_of: Optional[int] = None
+
+    @property
+    def is_in_hole(self) -> bool:
+        return self.in_hole_of is not None
 
 
 @dataclass
 class SheetLayout:
-    """One physical stock sheet and everything nested on it."""
+    """One physical stock sheet and everything nested on it.
+
+    ``spec`` is this sheet's OWN stock: a job that consumes retazos mixes sizes,
+    so per-sheet area, yield and weight all read from here rather than from the
+    job's nominal sheet. ``source`` is :data:`NEW_SHEET` for a sheet to buy, or
+    the retazo's label when it came off the rack.
+    """
 
     index: int
     spec: SheetSpec
     placements: List[Placement] = field(default_factory=list)
+    source: str = NEW_SHEET
+    leftover: Optional[Leftover] = None
+
+    @property
+    def is_remnant(self) -> bool:
+        return self.source != NEW_SHEET
 
     @property
     def used_area(self) -> float:
@@ -162,6 +291,21 @@ class SheetLayout:
     def part_count(self) -> int:
         return len(self.placements)
 
+    @property
+    def in_hole_count(self) -> int:
+        """Copies nested inside another part's hole on this sheet (E15)."""
+        return sum(1 for p in self.placements if p.is_in_hole)
+
+    @property
+    def parts_weight_kg(self) -> float:
+        """Mass of everything cut from this sheet (kg); 0.0 when unknown."""
+        return weight_kg(self.used_area, self.spec.thickness, self.spec.density)
+
+    @property
+    def stock_weight_kg(self) -> float:
+        """Mass of the sheet itself (kg); 0.0 when unknown."""
+        return self.spec.weight_kg
+
 
 @dataclass
 class NestResult:
@@ -175,6 +319,10 @@ class NestResult:
     # the solver and are never silently dropped — callers append ``messages``
     # to the job's ``errors[]``.
     invalid: List[Tuple[FlatPart, str]] = field(default_factory=list)
+    # Retazos offered but never opened — either nothing left fitted them, or the
+    # job ended first. Reported so the shop knows the rack was not silently
+    # ignored, and so the piece stays available for the next job.
+    remnants_unused: List[ExtraSheet] = field(default_factory=list)
 
     @property
     def messages(self) -> List[str]:
@@ -183,7 +331,18 @@ class NestResult:
 
     @property
     def sheet_count(self) -> int:
+        """TOTAL sheets used — new ones plus retazos."""
         return len(self.sheets)
+
+    @property
+    def new_sheets_needed(self) -> int:
+        """Full sheets the shop has to BUY (retazos are already on the rack)."""
+        return sum(1 for s in self.sheets if not s.is_remnant)
+
+    @property
+    def remnants_used(self) -> List[str]:
+        """Labels of the retazos consumed, in sheet order."""
+        return [s.source for s in self.sheets if s.is_remnant]
 
     @property
     def total_part_area(self) -> float:
@@ -191,7 +350,52 @@ class NestResult:
 
     @property
     def total_sheet_area(self) -> float:
-        return self.sheet_count * self.spec.area
+        """Area of the stock actually opened — sums the sheets, since a job
+        that eats retazos has more than one sheet size in play."""
+        return sum(s.spec.area for s in self.sheets)
+
+    @property
+    def new_sheet_area(self) -> float:
+        """Area of the sheets to buy — what procurement pays for."""
+        return sum(s.spec.area for s in self.sheets if not s.is_remnant)
+
+    @property
+    def in_hole_count(self) -> int:
+        """Copies nested inside another part's holes across the job (E15)."""
+        return sum(s.in_hole_count for s in self.sheets)
+
+    @property
+    def reclaimable(self) -> List[Tuple[int, Leftover]]:
+        """(sheet number, rectangle) for every sheet with a usable offcut (E16)."""
+        return [(s.index + 1, s.leftover) for s in self.sheets if s.leftover]
+
+    @property
+    def reclaimable_area(self) -> float:
+        return sum(lo.area for _n, lo in self.reclaimable)
+
+    @property
+    def can_weigh(self) -> bool:
+        return self.spec.can_weigh
+
+    @property
+    def parts_weight_kg(self) -> float:
+        """Mass of every part cut in this job (kg); 0.0 when density is unknown."""
+        return weight_kg(self.total_part_area, self.spec.thickness, self.spec.density)
+
+    @property
+    def stock_weight_kg(self) -> float:
+        """Mass of all stock opened, retazos included (kg)."""
+        return sum(s.stock_weight_kg for s in self.sheets)
+
+    @property
+    def new_stock_weight_kg(self) -> float:
+        """Mass of the sheets to buy (kg) — the number that goes on a purchase order."""
+        return sum(s.stock_weight_kg for s in self.sheets if not s.is_remnant)
+
+    @property
+    def drop_weight_kg(self) -> float:
+        """Mass that does not leave as a part (kg)."""
+        return max(0.0, self.stock_weight_kg - self.parts_weight_kg)
 
     @property
     def yield_pct(self) -> float:

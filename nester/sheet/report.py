@@ -77,45 +77,78 @@ _LANG = {
         # ---- portada ----
         "buy": "RESUMEN DE COMPRA",
         "buy_sub": "un solo material y calibre en todo el trabajo",
-        "h_material": "MATERIAL", "h_size": "MEDIDA", "h_sheets": "HOJAS",
-        "h_pcs": "PIEZAS", "h_yield": "APROV.",
+        "h_material": "MATERIAL", "h_size": "MEDIDA", "h_sheets": "LÁMINAS",
+        "h_pcs": "PIEZAS", "h_yield": "APROV.", "h_buy": "A COMPRAR",
+        "h_kg": "KG",
+        "buy_remnants": "+ {n} retazo(s) del rack: {list}",
         "material_sub": "margen {margin} · separación {gap} · rotación {rot}",
         "material_unknown": "Lámina (material sin especificar)",
-        "howitwent": "CÓMO QUEDÓ CADA HOJA",
+        "howitwent": "CÓMO QUEDÓ CADA LÁMINA",
+        "src_remnant": "retazo {label}",
+        "src_new": "lámina nueva",
+        "k_leftover": "SOBRANTE RECUP.",
+        "in_hole_tag": "EN BARRENO",
         "mini_pcs": "{n} pzas",
         "mini_pcs1": "1 pza",
-        "more_sheets": "+ {n} hoja(s) más · ver las hojas de dibujo",
+        "more_sheets": "+ {n} lámina(s) más · ver los dibujos",
         "parts_job": "PIEZAS DEL TRABAJO",
         "more_parts": "+ {n} pieza(s) más",
         "not_placed": "no cabe",
         "accounts": "CUENTAS DEL MATERIAL",
-        "a_sheets": "HOJAS", "a_bought": "ÁREA COMPRADA",
+        "a_sheets": "LÁMINAS", "a_bought": "ÁREA COMPRADA",
         "a_parts": "ÁREA EN PIEZAS", "a_drop": "SOBRANTE",
         "a_yield": "APROVECHAMIENTO",
-        "formula": "aprov. = área de piezas ÷ área de láminas = {parts} ÷ {stock} m² · "
-                   "el sobrante no se descuenta: todavía no entra al inventario de retazos",
+        "a_kg_buy": "KG A COMPRAR", "a_kg_parts": "KG EN PIEZAS",
+        "a_kg_drop": "KG DE SOBRANTE",
+        "formula": "aprov. = área de piezas ÷ área de láminas = {parts} ÷ {stock} m²",
+        "formula_reclaim": " · de ese sobrante, {area} m² se recuperan como retazo",
         "params": "PARÁMETROS DEL ANIDADO",
         "p_material": "Material", "p_thickness": "Espesor",
+        "p_density": "Densidad",
         "p_sheet": "Lámina", "p_margin": "Margen de lámina",
         "p_gap": "Separación entre piezas", "p_rot": "Rotación",
         "p_time": "Tiempo por lámina", "p_seed": "Semilla",
         "p_engine": "Motor", "p_engine_v": "spyrrow · sparrow",
         "p_parts": "Piezas a cortar", "p_unique": "Piezas distintas",
         "p_area": "Área de piezas",
+        "p_holes": "Anidado en barrenos", "p_remnants": "Retazos usados",
+        "p_minrem": "Retazo mínimo", "p_weight": "Peso de piezas",
+        "on": "activado", "off": "desactivado",
         "warn": "ANTES DE CORTAR",
         "warn_sub": "revísalo antes de encender la máquina",
         "warn_toobig": "Piezas más grandes que la lámina",
         "warn_toobig_txt": "No caben en el área útil de {sheet} y quedaron fuera "
                            "del plan: {names}. Divídelas o pide una lámina mayor.",
-        "warn_last": "La última hoja va al {pct}",
+        "warn_last": "La última lámina sale al {pct}",
         "warn_last_txt": "Si puedes esperar otro trabajo del mismo material y "
                          "calibre, se anidan juntos y sube el aprovechamiento.",
-        "warn_holes": "Los barrenos no se aprovechan",
-        "warn_holes_txt": "El motor no anida piezas dentro de los barrenos de "
-                          "otras piezas: el hueco de un barreno grande cuenta como sobrante.",
+        "warn_holes": "Los barrenos de este trabajo no se aprovecharon",
+        "warn_holes_txt": "Se corrió sin anidado en barrenos, así que el hueco de "
+                          "cada barreno grande cuenta como sobrante. El motor sí "
+                          "puede meter piezas ahí: vuelve a anidar con esa opción "
+                          "y compara las láminas.",
+        "warn_inhole": "{n} pieza(s) salen dentro del barreno de otra",
+        "warn_inhole_txt": "Van marcadas EN BARRENO en la lista de la hoja. El recorte del "
+                           "barreno NO es chatarra: sácalo entero, no lo tires con "
+                           "el esqueleto. Si la máquina deja caer los recortes, "
+                           "pon puente o soporte antes de cortar.",
+        "warn_reclaim": "Sobrante recuperable: {n} retazo(s)",
+        "warn_reclaim_txt": "Cada hoja de dibujo marca el rectángulo que queda "
+                            "libre ({list}). Cizállalo y dalo de alta en el rack: "
+                            "el siguiente trabajo puede anidar sobre él.",
         "warn_drop": "El sobrante no entra al inventario",
-        "warn_drop_txt": "Queda anotado en el plan, pero todavía no se registra "
-                         "como retazo de lámina reutilizable.",
+        "warn_drop_txt": "Este trabajo se corrió sin retazo mínimo, así que el "
+                         "sobrante queda anotado pero sin medida. Fija un retazo "
+                         "mínimo y el plan te dice qué rectángulo guardar.",
+        "warn_nokg": "Sin kilos en este trabajo",
+        "warn_nokg_txt": "Sin {missing} no hay kilos, así que el plan no reporta peso. Aquí no se "
+                         "adivina la densidad: un kilaje inventado termina en una compra mal hecha.",
+        "warn_nokg_density": "la densidad del material",
+        "warn_nokg_thickness": "el espesor",
+        "warn_nokg_both": "el espesor y la densidad del material",
+        "warn_remnant_unused": "{n} retazo(s) no se usaron",
+        "warn_remnant_unused_txt": "No cabía nada en ellos y siguen en el rack: "
+                                   "{list}.",
         "warn_generic": "Aviso del trabajo",
         "and_more": " y {n} más",
         "more_warn": "+ {n} aviso(s) más · ver el JSON del trabajo",
@@ -130,21 +163,27 @@ _LANG = {
         "scale_note": "escala 1:{scale} · origen en la esquina inferior izquierda · medidas en mm",
         "k_yield": "APROVECHAMIENTO", "k_parts": "PIEZAS",
         "k_area": "ÁREA EN PIEZAS", "k_drop": "SOBRANTE",
-        "sheet_parts": "PIEZAS DE ESTA HOJA",
+        "sheet_parts": "PIEZAS DE ESTA LÁMINA",
         "c_piece": "PIEZA", "c_desc": "DESCRIPCIÓN", "c_bbox": "ENCAJONADO",
         "c_qty": "CANT.",
         "operator": "PARA EL OPERADOR",
-        "note_low": "Esta hoja va a menos de la mitad. Antes de cortarla, confirma "
-                    "con el taller si conviene esperar otro trabajo del mismo "
-                    "material y calibre.",
-        "note_ok": "Carga la hoja con el margen de {margin} libre en los cuatro "
+        "note_low": "Esta lámina sale a menos de la mitad. Antes de cortarla, "
+                    "pregúntale al encargado si conviene esperar otro trabajo del "
+                    "mismo material y calibre.",
+        "note_ok": "Carga la lámina con el margen de {margin} libre en los cuatro "
                    "lados. La separación entre piezas es de {gap}: no muevas "
-                   "piezas a mano en el CAM o se pierde.",
-        "note_nomargin": "Carga la hoja escuadrada contra los topes. La separación "
+                   "piezas a mano en el CAM o se te pega el corte.",
+        "note_nomargin": "Carga la lámina escuadrada contra los topes. La separación "
                          "entre piezas es de {gap}: no muevas piezas a mano en el "
-                         "CAM o se pierde.",
+                         "CAM o se te pega el corte.",
+        "note_remnant": "Esta no es lámina nueva: es el retazo {label} de {size}, "
+                        "búscalo en el rack.",
+        "note_inhole": "{n} pieza(s) salen dentro del barreno de otra (marcadas EN BARRENO): "
+                       "saca ese recorte entero, no lo tires con el esqueleto.",
+        "note_leftover": "Al terminar queda un retazo de {size}, marcado en el "
+                         "dibujo: cizállalo y dalo de alta en el rack.",
         "control": "CONTROL DE CORTE",
-        "ctl_loaded": "Hoja cargada y escuadrada",
+        "ctl_loaded": "Lámina cargada y escuadrada",
         "ctl_program": "Programa {file} cargado",
         "ctl_counted": "Piezas contadas al descargar",
         # ---- chrome ----
@@ -152,7 +191,7 @@ _LANG = {
         "foot_cover": "hecho con {brand} · nester.harriet.com.mx · {date}",
         "foot_params": "margen {margin} · separación {gap} · rotación {rot}",
         "foot_seed": "motor spyrrow · semilla {seed}",
-        "empty": "Ninguna pieza se pudo colocar en una lámina.",
+        "empty": "Ninguna pieza cupo en la lámina.",
         "rot_free": "libre", "rot_grain": "grano", "rot_fixed": "fija",
         "rot_ortho": "ortogonal",
         "pdf_name": "{slug}_Plan_de_Corte.pdf",
@@ -163,10 +202,16 @@ _LANG = {
         "buy": "PURCHASE SUMMARY",
         "buy_sub": "one material and gauge for the whole job",
         "h_material": "MATERIAL", "h_size": "SIZE", "h_sheets": "SHEETS",
-        "h_pcs": "PARTS", "h_yield": "YIELD",
+        "h_pcs": "PARTS", "h_yield": "YIELD", "h_buy": "TO BUY",
+        "h_kg": "KG",
+        "buy_remnants": "+ {n} remnant(s) off the rack: {list}",
         "material_sub": "margin {margin} · gap {gap} · rotation {rot}",
         "material_unknown": "Sheet (material not specified)",
         "howitwent": "HOW EACH SHEET WORKED OUT",
+        "src_remnant": "remnant {label}",
+        "src_new": "new sheet",
+        "k_leftover": "RECLAIMABLE",
+        "in_hole_tag": "IN HOLE",
         "mini_pcs": "{n} pcs",
         "mini_pcs1": "1 pc",
         "more_sheets": "+ {n} more sheet(s) · see the drawing sheets",
@@ -177,16 +222,22 @@ _LANG = {
         "a_sheets": "SHEETS", "a_bought": "AREA BOUGHT",
         "a_parts": "AREA IN PARTS", "a_drop": "LEFTOVER",
         "a_yield": "YIELD",
-        "formula": "yield = part area ÷ sheet area = {parts} ÷ {stock} m² · "
-                   "the leftover is not discounted: it is not remnant stock yet",
+        "a_kg_buy": "KG TO BUY", "a_kg_parts": "KG IN PARTS",
+        "a_kg_drop": "KG LEFTOVER",
+        "formula": "yield = part area ÷ sheet area = {parts} ÷ {stock} m²",
+        "formula_reclaim": " · {area} m² of that leftover comes back as remnant stock",
         "params": "NESTING PARAMETERS",
         "p_material": "Material", "p_thickness": "Thickness",
+        "p_density": "Density",
         "p_sheet": "Sheet", "p_margin": "Sheet margin",
         "p_gap": "Part-to-part gap", "p_rot": "Rotation",
         "p_time": "Time per sheet", "p_seed": "Seed",
         "p_engine": "Solver", "p_engine_v": "spyrrow · sparrow",
         "p_parts": "Parts to cut", "p_unique": "Distinct parts",
         "p_area": "Part area",
+        "p_holes": "Nesting into holes", "p_remnants": "Remnants used",
+        "p_minrem": "Minimum remnant", "p_weight": "Weight of parts",
+        "on": "on", "off": "off",
         "warn": "BEFORE YOU CUT",
         "warn_sub": "check this before starting the machine",
         "warn_toobig": "Parts larger than the sheet",
@@ -195,12 +246,33 @@ _LANG = {
         "warn_last": "The last sheet runs at {pct}",
         "warn_last_txt": "If you can wait for another job in the same material and "
                          "gauge, nesting them together raises the yield.",
-        "warn_holes": "Holes are not nested into",
-        "warn_holes_txt": "The solver does not nest parts inside other parts' "
-                          "holes: a big hole counts as leftover.",
+        "warn_holes": "This job did not nest into holes",
+        "warn_holes_txt": "It ran with hole nesting off, so every large hole "
+                          "counts as leftover. The solver can place parts in "
+                          "there: re-nest with that option on and compare.",
+        "warn_inhole": "{n} part(s) come out inside another part's hole",
+        "warn_inhole_txt": "They are marked IN HOLE on the sheet list. The hole slug is NOT "
+                           "scrap: lift it out whole, do not bin it with the "
+                           "skeleton. If the machine drops slugs, add a tab or a "
+                           "support before cutting.",
+        "warn_reclaim": "Reclaimable leftover: {n} remnant(s)",
+        "warn_reclaim_txt": "Each drawing sheet marks the rectangle left free "
+                            "({list}). Shear it and book it into the rack: the "
+                            "next job can nest on it.",
         "warn_drop": "The leftover is not tracked",
-        "warn_drop_txt": "It is reported on the plan, but it is not registered as "
-                         "reusable sheet remnant stock yet.",
+        "warn_drop_txt": "This job ran with no minimum remnant, so the leftover is "
+                         "reported but not measured. Set a minimum and the plan "
+                         "tells you which rectangle to keep.",
+        "warn_nokg": "No weights in this job",
+        "warn_nokg_txt": "{missing} is missing, so the plan reports no weight. No "
+                         "density is assumed: an invented kilo figure turns into "
+                         "a wrong purchase order.",
+        "warn_nokg_density": "The material density",
+        "warn_nokg_thickness": "The thickness",
+        "warn_nokg_both": "The thickness and the material density",
+        "warn_remnant_unused": "{n} remnant(s) went unused",
+        "warn_remnant_unused_txt": "Nothing left fitted them and they are still on "
+                                   "the rack: {list}.",
         "warn_generic": "Job warning",
         "and_more": " and {n} more",
         "more_warn": "+ {n} more warning(s) · see the job JSON",
@@ -227,6 +299,12 @@ _LANG = {
         "note_nomargin": "Load the sheet squared against the stops. The "
                          "part-to-part gap is {gap}: do not drag parts by hand in "
                          "the CAM or it is lost.",
+        "note_remnant": "This is not a new sheet: it is remnant {label}, {size} — "
+                        "find it on the rack.",
+        "note_inhole": "{n} part(s) come out inside another part's hole (marked IN HOLE): "
+                       "lift that slug out whole, do not bin it with the skeleton.",
+        "note_leftover": "It finishes leaving a {size} remnant, marked on the "
+                         "drawing: shear it and book it into the rack.",
         "control": "CUT CHECKLIST",
         "ctl_loaded": "Sheet loaded and squared",
         "ctl_program": "Program {file} loaded",
@@ -304,7 +382,38 @@ def _part_base(name: str) -> str:
 
 def _as_dict(result: NestResult, job_name: str, meta: dict,
              warnings: List[str] | None = None) -> dict:
+    """The machine-readable nest. Additive only — the web product reads this.
+
+    Three families of field carry the E8/E15/E16 work:
+
+    * weights (``totals.*_kg``) appear ONLY when the stock has both a thickness
+      and a known density. An absent key means "cannot be weighed"; it never
+      means zero, and there is deliberately no fallback density;
+    * retazos split ``totals.sheets`` (opened) from ``totals.sheets_to_buy``
+      (purchased) — with a rack in play those are different numbers, and only
+      the second one goes on a purchase order;
+    * ``reclaimable`` / ``sheets[].leftover`` describe the offcut each sheet
+      leaves, in sheet coordinates, so it can be booked into a retazo inventory
+      instead of being written off as drop.
+    """
     spec = result.spec
+    totals = {
+        "sheets": result.sheet_count,
+        "sheets_to_buy": result.new_sheets_needed,
+        "remnants_used": result.remnants_used,
+        "yield_pct": round(result.yield_pct, 2),
+        "parts_placed": sum(s.part_count for s in result.sheets),
+        "parts_in_holes": result.in_hole_count,
+        "unplaceable": len(result.unplaceable),
+        "reclaimable_area_mm2": round(result.reclaimable_area, 2),
+    }
+    if result.can_weigh:
+        totals.update({
+            "parts_kg": round(result.parts_weight_kg, 3),
+            "stock_kg": round(result.stock_weight_kg, 3),
+            "to_buy_kg": round(result.new_stock_weight_kg, 3),
+            "drop_kg": round(result.drop_weight_kg, 3),
+        })
     return {
         "job": job_name,
         "generated": meta.get("generated", ""),
@@ -312,33 +421,51 @@ def _as_dict(result: NestResult, job_name: str, meta: dict,
         "params": {
             "material": spec.material,
             "thickness": spec.thickness,
+            "density_kg_m3": spec.density or None,
             "sheet_width": spec.width,
             "sheet_height": spec.height,
             "margin": spec.margin,
             "part_gap": spec.part_gap,
             "rotation": meta.get("rotation", ""),
+            "nest_in_holes": bool(meta.get("nest_in_holes", False)),
+            "min_remnant_mm": meta.get("min_remnant", 0) or 0,
         },
-        "totals": {
-            "sheets": result.sheet_count,
-            "yield_pct": round(result.yield_pct, 2),
-            "parts_placed": sum(s.part_count for s in result.sheets),
-            "unplaceable": len(result.unplaceable),
-        },
+        "totals": totals,
         "sheets": [
             {
                 "sheet": s.index + 1,
+                "source": s.source,
+                "width": s.spec.width,
+                "height": s.spec.height,
                 "utilization_pct": round(s.utilization * 100, 2),
+                "leftover": (
+                    {
+                        "x": round(s.leftover.x, 2), "y": round(s.leftover.y, 2),
+                        "width": round(s.leftover.width, 2),
+                        "height": round(s.leftover.height, 2),
+                    } if s.leftover else None
+                ),
                 "parts": [
                     {
                         "name": p.part.name,
                         "x": round(p.x, 3),
                         "y": round(p.y, 3),
                         "rotation": round(p.rotation, 3),
+                        "in_hole_of": p.in_hole_of,
                     }
                     for p in s.placements
                 ],
             }
             for s in result.sheets
+        ],
+        "remnants_unused": [
+            {"label": e.label, "width": e.width, "height": e.height}
+            for e in result.remnants_unused
+        ],
+        "reclaimable": [
+            {"sheet": n, "x": round(lo.x, 2), "y": round(lo.y, 2),
+             "width": round(lo.width, 2), "height": round(lo.height, 2)}
+            for n, lo in result.reclaimable
         ],
         "unplaceable": [
             {"name": p.name, "width": round(p.size[0], 2), "height": round(p.size[1], 2)}
@@ -366,6 +493,11 @@ def _mmn(v: float) -> str:
 
 def _dim(w: float, h: float) -> str:
     return f"{_num(w, 0)} × {_num(h, 0)} mm"
+
+
+def _kg(v: float) -> str:
+    """Kilos as the shop writes them: whole numbers past 100, one decimal below."""
+    return f"{v:,.0f} kg" if abs(v) >= 100 else f"{v:,.1f} kg"
 
 
 def _m2(area_mm2: float) -> str:
@@ -527,10 +659,19 @@ def _build_pieces(result: NestResult) -> Tuple[List[_Piece], Dict[str, _Piece]]:
     return [by_name[p.name] for p in ranked], by_name
 
 
-def _sheet_groups(layout: SheetLayout, by_name: Dict[str, _Piece]) -> List[Tuple[_Piece, int]]:
-    counts: Counter = Counter(pl.part.name for pl in layout.placements)
-    groups = [(by_name[n], k) for n, k in counts.items()]
-    groups.sort(key=lambda g: (-g[1], g[0].pid))
+def _sheet_groups(
+    layout: SheetLayout, by_name: Dict[str, _Piece]
+) -> List[Tuple[_Piece, int, bool]]:
+    """Rows for this sheet's parts table: (piece, count, cut-from-a-hole).
+
+    Copies nested inside another part's hole get their OWN row even when the
+    same piece also appears loose on the sheet. Merging them would hide the one
+    fact the operator has to act on — that some of these come out inside a slug.
+    """
+    counts: Counter = Counter(
+        (pl.part.name, pl.is_in_hole) for pl in layout.placements)
+    groups = [(by_name[n], k, in_hole) for (n, in_hole), k in counts.items()]
+    groups.sort(key=lambda g: (g[2], -g[1], g[0].pid))
     return groups
 
 
@@ -593,6 +734,19 @@ def _draw_nest(c, layout: SheetLayout, by_name: Dict[str, _Piece], x0: float,
         if not mini and w - 2 * m > 0 and h - 2 * m > 0:
             rect(c, x0 + m, y0 + m, w - 2 * m, h - 2 * m, stroke=DASH_RULE,
                  lw=px(1.2), dash=(px(6), px(4.5)))
+
+    # The reclaimable offcut, drawn BEFORE the parts so a silhouette always wins
+    # the pixel. It cannot overlap a part by construction, but the plan must not
+    # depend on that to stay readable.
+    lo = layout.leftover
+    if lo is not None and not mini:
+        lx, ly, lw_, lh_ = x0 + lo.x * s, y0 + lo.y * s, lo.width * s, lo.height * s
+        rect(c, lx, ly, lw_, lh_, fill=ACC_BG, stroke=ACC_BRD, lw=px(1.2),
+             dash=(px(5), px(4)))
+        label = _dim(lo.width, lo.height)
+        if lw_ > tw(c, label, MONO_B, px(9)) + px(10) and lh_ > px(16):
+            txt(c, lx + lw_ / 2, ly + lh_ / 2 - px(3), label, MONO_B, px(9),
+                ACC_TXT, align="c")
 
     for pl in layout.placements:
         piece = by_name.get(pl.part.name)
@@ -720,11 +874,17 @@ def _render(dest, result: NestResult, job_name, meta, L, slug, warnings, total):
         state["page"] += 1
         fname = f"{slug}_S{str(layout.index + 1).zfill(pad)}.dxf"
         n = layout.part_count
+        # Each sheet is described by ITS OWN stock: a job that eats retazos has
+        # more than one sheet size, and the header is what the operator matches
+        # against the piece in their hands.
+        sub = (L["sheet_sub1"] if n == 1 else L["sheet_sub"]).format(
+            material=_material_label(L, layout.spec),
+            size=_dim(layout.spec.width, layout.spec.height), n=n)
+        if layout.is_remnant:
+            sub += " · " + L["src_remnant"].format(label=layout.source)
         top = header(
             L["sheet_title"].format(i=layout.index + 1, n=result.sheet_count),
-            (L["sheet_sub1"] if n == 1 else L["sheet_sub"]).format(
-                material=_material_label(L, spec), size=_dim(spec.width, spec.height), n=n),
-            job_name, fname)
+            sub, job_name, fname)
         _sheet_page(c, L, layout, by_name, meta, fname, pad_l, cw, top,
                     pad_b + px(28))
         page_break(foot_params)
@@ -786,7 +946,7 @@ def _cover(c, L, result, pieces, meta, job_name, subtitle, brand, monogram,
                    body_top, body_bot)
     line(c, right_x - px(11), body_bot, right_x - px(11), body_top, RULE)
 
-    acc_h = px(52)
+    acc_h = px(64) if result.can_weigh else px(52)   # the kilos line needs a row
     y = body_top
     y = _buy_table(c, L, result, pieces, rot, pad_l, left_w, y)
     y -= px(15)
@@ -814,8 +974,13 @@ def _buy_table(c, L, result, pieces, rot, x, w, y) -> float:
     rect(c, x, top - head_h, w, head_h, fill=INK)
     hy = top - head_h + px(6)
     hs = px(8.5)
+    # With retazos on the rack, "sheets opened" and "sheets to buy" are different
+    # numbers — and this panel is the PURCHASE summary, so it shows the one that
+    # goes on the order.
+    buying = bool(result.remnants_used)
     txt(c, x + pad, hy, L["h_material"], MONO_B, hs, PAPER, track=hs * 0.11)
-    for lbl, cx in ((L["h_size"], c_size), (L["h_sheets"], c_sheets),
+    for lbl, cx in ((L["h_size"], c_size),
+                    (L["h_buy"] if buying else L["h_sheets"], c_sheets),
                     (L["h_pcs"], c_pcs), (L["h_yield"], c_yield)):
         txt(c, cx, hy, lbl, MONO_B, hs, PAPER, track=hs * 0.11, align="r")
 
@@ -829,10 +994,21 @@ def _buy_table(c, L, result, pieces, rot, x, w, y) -> float:
     my = ry - px(19)
     placed = sum(s.part_count for s in result.sheets)
     txt(c, c_size, my, _dim(spec.width, spec.height), MONO, px(12), INK, align="r")
-    txt(c, c_sheets, my, str(result.sheet_count), MONO_B, px(15), INK, align="r")
+    txt(c, c_sheets, my,
+        str(result.new_sheets_needed if buying else result.sheet_count),
+        MONO_B, px(15), INK, align="r")
     txt(c, c_pcs, my, str(placed), MONO, px(12), INK, align="r")
     txt(c, c_yield, my, _pct(result.yield_pct), MONO_B, px(13), INK, align="r")
-    return ry - row_h
+    y = ry - row_h
+    if buying:
+        used = result.remnants_used
+        listing = ", ".join(used[:5]) + (
+            L["and_more"].format(n=len(used) - 5) if len(used) > 5 else "")
+        y -= px(12)
+        txt(c, x, y, ellipsize(c, L["buy_remnants"].format(n=len(used), list=listing),
+                               MONO, px(9.5), w), MONO, px(9.5), SOFT)
+        y -= px(2)
+    return y
 
 
 def _how_it_went(c, L, result, pieces, by_name, x, w, y, floor) -> float:
@@ -969,9 +1145,21 @@ def _accounts(c, L, result, x, w, y) -> None:
         if i < len(cells) - 1:
             line(c, cx - px(7), y - px(13), cx - px(7), y + px(6), HAIR)
 
-    txt(c, x, y - px(23),
-        ellipsize(c, L["formula"].format(parts=_m2(parts), stock=_m2(bought)),
-                  MONO, px(9), w), MONO, px(9), FAINT)
+    formula = L["formula"].format(parts=_m2(parts), stock=_m2(bought))
+    if result.reclaimable_area:
+        formula += L["formula_reclaim"].format(area=_m2(result.reclaimable_area))
+    txt(c, x, y - px(23), ellipsize(c, formula, MONO, px(9), w), MONO, px(9), FAINT)
+
+    # Kilos get their own line rather than more cells: the band is already five
+    # columns wide and a shop reads weight as a sentence ("compro 210, salen 101").
+    if result.can_weigh:
+        kilos = " · ".join((
+            f"{L['a_kg_buy'].lower()} {_kg(result.new_stock_weight_kg)}",
+            f"{L['a_kg_parts'].lower()} {_kg(result.parts_weight_kg)}",
+            f"{L['a_kg_drop'].lower()} {_kg(result.drop_weight_kg)}",
+        ))
+        txt(c, x, y - px(35), ellipsize(c, kilos, MONO, px(9.5), w),
+            MONO, px(9.5), MID)
 
 
 def _params_column(c, L, result, pieces, meta, rot, warnings, x, w, y, floor):
@@ -985,6 +1173,8 @@ def _params_column(c, L, result, pieces, meta, rot, warnings, x, w, y, floor):
     ]
     if spec.thickness:
         rows.append((L["p_thickness"], _mm(spec.thickness)))
+    if spec.density:
+        rows.append((L["p_density"], f"{spec.density:,.0f} kg/m³"))
     rows += [
         (L["p_sheet"], _dim(spec.width, spec.height)),
         (L["p_margin"], _mm(spec.margin)),
@@ -999,8 +1189,16 @@ def _params_column(c, L, result, pieces, meta, rot, warnings, x, w, y, floor):
         (L["p_unique"], str(len(pieces))),
         (L["p_parts"], str(placed)),
         (L["p_area"], f"{_m2(result.total_part_area)} m²"),
-        (L["p_engine"], L["p_engine_v"]),
     ]
+    if result.can_weigh:
+        rows.append((L["p_weight"], _kg(result.parts_weight_kg)))
+    # Only state an option once it has changed something — an "off" row for a
+    # feature nobody asked for is noise on a page the operator has to read.
+    if meta.get("nest_in_holes"):
+        rows.append((L["p_holes"], f"{L['on']} · {result.in_hole_count}"))
+    if result.remnants_used:
+        rows.append((L["p_remnants"], str(len(result.remnants_used))))
+    rows.append((L["p_engine"], L["p_engine_v"]))
     for i, (lb, v) in enumerate(rows):
         y -= px(15)
         txt(c, x, y, lb, SANS, px(10.5), MID)
@@ -1010,7 +1208,7 @@ def _params_column(c, L, result, pieces, meta, rot, warnings, x, w, y, floor):
     y -= px(20)
 
     sign_top = floor + px(58)
-    cards = _warning_cards(c, L, result, warnings)
+    cards = _warning_cards(c, L, result, warnings, meta)
     if cards:
         _warning_panel(c, L, cards, x, w, y, sign_top + px(24))
 
@@ -1019,10 +1217,22 @@ def _params_column(c, L, result, pieces, meta, rot, warnings, x, w, y, floor):
     signature_block(c, L["sign"], x, sign_top - px(14), w)
 
 
-def _warning_cards(c, L, result, warnings) -> List[Tuple[str, str]]:
-    """The cards the shop must read: real problems first, engine limits last."""
+def _warning_cards(c, L, result, warnings, meta=None) -> List[Tuple[str, str]]:
+    """The cards the shop must read, in the order they matter on the floor.
+
+    Ordering is deliberate: what stops the job (parts that do not fit), then what
+    changes how the operator handles the material (parts coming out inside a
+    slug), then what changes what gets stored (reclaimable offcuts), then what
+    the job was NOT told to do. A card only appears when it is true of THIS run —
+    an option that is switched on stops being a limitation and becomes an
+    instruction, which is the whole point of having the option.
+    """
+    meta = meta or {}
+    in_holes = bool(meta.get("nest_in_holes", False))
+    min_remnant = float(meta.get("min_remnant", 0) or 0)
     cards: List[Tuple[str, str]] = []
     spec = result.spec
+
     if result.unplaceable:
         shown = result.unplaceable[:4]
         names = ", ".join(
@@ -1034,18 +1244,53 @@ def _warning_cards(c, L, result, warnings) -> List[Tuple[str, str]]:
                       L["warn_toobig_txt"].format(
                           sheet=_dim(spec.usable_width, spec.usable_height),
                           names=names)))
+
+    # Parts nested into holes change what the operator does with the slug, so
+    # this ranks above every informational card.
+    if result.in_hole_count:
+        cards.append((L["warn_inhole"].format(n=result.in_hole_count),
+                      L["warn_inhole_txt"]))
+
     for w in (warnings or []):
         head, _, rest = str(w).partition(": ")
         cards.append((head, rest) if rest else (L["warn_generic"], head))
+
     if result.sheets:
         last = result.sheets[-1]
         if len(result.sheets) > 1 and last.utilization < _LOW_YIELD:
             cards.append((L["warn_last"].format(pct=_pct(last.utilization * 100)),
                           L["warn_last_txt"]))
-    if any(p.part.holes for p in
-           (pl for s in result.sheets for pl in s.placements)):
+
+    reclaim = result.reclaimable
+    if reclaim:
+        shown = reclaim[:3]
+        listing = " · ".join(f"#{n} {_num(lo.width, 0)}×{_num(lo.height, 0)}"
+                             for n, lo in shown)
+        if len(reclaim) > len(shown):
+            listing += L["and_more"].format(n=len(reclaim) - len(shown))
+        cards.append((L["warn_reclaim"].format(n=len(reclaim)),
+                      L["warn_reclaim_txt"].format(list=listing)))
+    elif min_remnant <= 0:
+        cards.append((L["warn_drop"], L["warn_drop_txt"]))
+
+    if result.remnants_unused:
+        shown = result.remnants_unused[:4]
+        listing = ", ".join(f"{e.label} ({_num(e.width, 0)}×{_num(e.height, 0)})"
+                            for e in shown)
+        if len(result.remnants_unused) > len(shown):
+            listing += L["and_more"].format(n=len(result.remnants_unused) - len(shown))
+        cards.append((L["warn_remnant_unused"].format(n=len(result.remnants_unused)),
+                      L["warn_remnant_unused_txt"].format(list=listing)))
+
+    if not in_holes and any(pl.part.holes for s in result.sheets for pl in s.placements):
         cards.append((L["warn_holes"], L["warn_holes_txt"]))
-    cards.append((L["warn_drop"], L["warn_drop_txt"]))
+
+    if not result.can_weigh:
+        has_t, has_d = spec.thickness > 0, spec.density > 0
+        missing = (L["warn_nokg_thickness"] if has_d and not has_t else
+                   L["warn_nokg_density"] if has_t and not has_d else
+                   L["warn_nokg_both"])
+        cards.append((L["warn_nokg"], L["warn_nokg_txt"].format(missing=missing)))
     return cards
 
 
@@ -1207,15 +1452,16 @@ def _sheet_parts_table(c, L, groups, x, w, y, floor) -> float:
     txt(c, x + w - pad, hy, L["c_qty"], MONO_B, hs, PAPER, track=hs * 0.1, align="r")
     y -= head_h
 
-    for i, (pc, n) in enumerate(shown):
+    for i, (pc, n, in_hole) in enumerate(shown):
         ry = y - row_h
         if i % 2:
             rect(c, x + px(1), ry, w - px(2), row_h, fill=ZEBRA)
         ty = ry + row_h / 2 - px(3.5)
         _swatch(c, pc, x + pad, ry + px(2), sw_w, row_h - px(4))
         txt(c, x + pad + sw_w + gap, ty, pc.pid, MONO_B, px(10.5), INK)
-        txt(c, desc_x, ty, ellipsize(c, pc.desc, SANS, px(10.5), desc_w),
-            SANS, px(10.5), MID)
+        desc = f"{L['in_hole_tag']} · {pc.desc}" if in_hole else pc.desc
+        txt(c, desc_x, ty, ellipsize(c, desc, SANS, px(10.5), desc_w),
+            SANS, px(10.5), ACC_TXT if in_hole else MID)
         bw, bh = pc.size
         txt(c, x + w - pad - qty_w - gap, ty, _dim(bw, bh), MONO, px(9), SOFT,
             align="r")
@@ -1230,12 +1476,29 @@ def _sheet_parts_table(c, L, groups, x, w, y, floor) -> float:
 
 
 def _operator_body(L, layout) -> str:
+    """The paragraph for this sheet, loading instruction first then consequences.
+
+    The extra sentences ride here rather than in a KPI cell on purpose: both are
+    things the operator DOES (lift the slug out whole, shear and keep the
+    offcut), and an instruction reads as an instruction only in prose.
+    """
     spec = layout.spec
-    if layout.utilization < _LOW_YIELD:
-        return L["note_low"]
     if spec.margin > 0:
-        return L["note_ok"].format(margin=_mm(spec.margin), gap=_mm(spec.part_gap))
-    return L["note_nomargin"].format(gap=_mm(spec.part_gap))
+        body = L["note_ok"].format(margin=_mm(spec.margin), gap=_mm(spec.part_gap))
+    else:
+        body = L["note_nomargin"].format(gap=_mm(spec.part_gap))
+    if layout.utilization < _LOW_YIELD:
+        body = L["note_low"] + " " + body
+
+    if layout.is_remnant:
+        body = L["note_remnant"].format(
+            label=layout.source, size=_dim(spec.width, spec.height)) + " " + body
+    if layout.in_hole_count:
+        body += " " + L["note_inhole"].format(n=layout.in_hole_count)
+    if layout.leftover:
+        body += " " + L["note_leftover"].format(
+            size=_dim(layout.leftover.width, layout.leftover.height))
+    return body
 
 
 def _operator_note(c, L, layout, x, w, y) -> float:
