@@ -178,9 +178,20 @@ hook); a clear statement of what happens to their files.
 > artifact downloads. In progress app-side: Historial, Máquinas presets,
 > provenance badges, Retazos v1 (inventory only). **E9 ✅ landed in the engine**
 > (nesting against retazos — `extra_stock` on `/v1/nest`), so the design's
-> "usar retazo" is now a real engine capability the app can wire up. Next
-> engine contracts, in order: angle/bisel detection (design negotiates 45°
-> ends), E8 weight, mixed placas (E13), STEP (E12).
+> "usar retazo" is now a real engine capability the app can wire up.
+>
+> **Close-out, later 2026-08-24:** everything above marked "in progress" is
+> live at **https://nester.harriet.com.mx** — Historial/Máquinas/provenance/
+> Retazos, E9 wired end-to-end (remnants consumed in production, lifecycle
+> libre→apartado→usado), per-turn AI usage metering (from the API's own
+> usage object), design round-2 UI (JobTabs, new composer), the cut-plan
+> PDF rebuilt to the "Plan de corte" artboard, and i18n (es-MX default and
+> source of truth, en second; the AI and the PDF follow the user's locale;
+> regional stock catalogs deferred as their own phase). Design sync flow:
+> canvas → handoff export → diff vs the web repo's `design/` snapshot →
+> implement deltas → promote snapshot. Next engine contracts, in order:
+> angle/bisel detection (design negotiates 45° ends), E8 weight (unblocks
+> peso/kg across UI+PDF), mixed placas (E13), STEP (E12), 2D async (E1/A5).
 
 **Phase 0 — Boundary (days).** A1–A4 + second API key on the existing Render
 service. A5 can slip if launch is tube-first.

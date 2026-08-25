@@ -66,10 +66,27 @@ cd ~/Documents/Nester
 ```
 
 Writes three files into `output/<job-name>/`:
-- `<job>_Plan_de_Corte.pdf` (Cut_Plan if `--lang en`) — the shop cut order:
-  shopping-summary box, per-bar diagrams with a metre ruler, parts colored by
-  length, labeled scrap + chuck dead-zone, a cut list, and a **parts guide**
-  (color → which source files that length comes from).
+- `<job>_Plan_de_Corte.pdf` (Cut_Plan if `--lang en`) — the shop cut order,
+  laid out to the Harriet Nester "Plan de corte" artboard (A4/letter landscape,
+  white paper + graphite ink, Helvetica for prose / Courier for every figure).
+  Four kinds of sheet:
+  1. **Portada** — resumen de compra (only NEW tramos to buy, retazos used
+     listed separately), *cómo quedó el material* (every bar as a mini strip,
+     drawn at its own length, with yield + drop), *antes de cortar* (numbered
+     amber cards for unplaceable parts and artifact warnings — omitted when
+     there are none), *cuentas del material* (comprado · de retazo · en piezas ·
+     kerf · zona muerta · sobrante · **aprov.** with its formula), plus nesting
+     parameters, source files and four signature lines.
+  2. **Dibujo de tramos** — up to 3 bars per sheet, each with a metre ruler,
+     pieces colored by length and labeled `P-xx` + length, hatched dead zones,
+     dashed drop, running positions under every cut, and a tickable
+     **secuencia** chip row.
+  3. **Lista de cortes** — every cut in machine order, two columns with tick
+     boxes, banded by profile on multi-profile jobs, ending in the **parts
+     guide** (`RESUMEN POR PIEZA`: color → which source files that length comes
+     from) and a total.
+  4. **Etiquetas** — one cut-out label per piece (color bar, `P-xx`, source
+     file, length, tramo·pos, folio `JOB-Pxx-nn`).
 - `<job>_corte.json` — machine-readable layout.
 - `<job>_nest.igs` — the whole nest as 3D wireframe tubes (each bar a box of the
   real cross-section, pieces colored by length) to open in CAD. Skip with
