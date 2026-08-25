@@ -257,9 +257,10 @@ area, not tracked as reusable inventory; nesting is stochastic within `--time`
 | DXF reader (contours + holes, layer-classified) | `nester/sheet/dxf_read.py` |
 | Irregular nester (spyrrow wrapper + multi-sheet fill, progress/cancel) | `nester/sheet/pack.py` |
 | Part silhouettes for the API (decimation, holes, origin) | `nester/sheet/contour.py` |
-| PDF + JSON output | `nester/sheet/report.py` |
+| PDF + JSON output (portada + a drawing sheet per lámina, real silhouettes) | `nester/sheet/report.py` |
 | Nested DXF-per-sheet output | `nester/sheet/dxf_out.py` |
 | CLI | `nester/sheet/cli.py` (`python -m nester.sheet`) |
+| Print design tokens + canvas primitives (shared PDF vocabulary) | `nester/_pdfstyle.py` |
 | **Service** — async sheet jobs (registry, executor, R2 record) | `service/v1/jobs.py` |
 | Synthetic IGES generator (tests) | `tools/make_sample_iges.py` |
 | Sample files | `samples/` |

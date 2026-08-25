@@ -98,6 +98,9 @@ def _meta(args) -> dict:
         "generated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "lang": args.lang,
         "rotation": args.rotate,
+        # traceability: the plan prints the settings a re-run needs to reproduce it
+        "seed": args.seed,
+        "time_per_sheet": args.time,
     }
 
 
