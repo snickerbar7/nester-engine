@@ -237,7 +237,11 @@ model decided 2026-08-24, measured against real AI cost ($0.134 USD list /
 ~MX$2.5 per full job, 87% of input cache-served):**
 - Unit: **1 crédito = 1 anidado** (each run_nest). Conversation is free,
   backstopped by a fair-use daily turn cap.
-- **Gratis:** 8 créditos/mes, full-quality deliverables, no watermarks.
+- **Gratis (revised 2026-08-25): 3 anidados de PRUEBA, total — no monthly
+  refill** (owner's call; anti-trial-farming). Signup is instant but
+  nesting requires EMAIL VERIFICATION (Resend), plus a disposable-domain
+  blocklist and per-IP signup limits. Full-quality deliverables, no
+  watermarks.
 - **Taller: MX$499/mes**, 100 créditos/mes.
 - **Extra: 50 créditos = MX$149** (one-time packs, roll over while
   subscribed). Card + OXXO + SPEI. Factura manual at first (Stripe MX has
