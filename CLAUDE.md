@@ -71,37 +71,58 @@ IGES files ──▶ extract cut length ──▶ group by profile ──▶ pac
   nesting so the bars to buy scale with it.
 - **Stock** = one full-bar (tramo) length per profile (global `--stock-length`,
   with optional `--stock PROFILE=MM` overrides).
-- **Retazos (E9)**: the shop's leftovers are extra stock. Pass them with
-  `--remnant PROFILE=MM[:LABEL]` (repeatable; label defaults to `R-000n`) — or
-  `extra_stock: [{profile, length_mm, label}]` on `POST /v1/nest`. They're a
-  finite pool: each piece is usable **once**, gets the same kerf/trims as a
-  tramo, and the solver spends the **smallest fitting** one before buying a new
-  bar (big retazos stay free for big parts). The plan then reports
-  `new_bars_needed` (what to BUY) separately from total bars, names every
-  retazo it consumed, and draws each bar at its own length. A retazo for a
+- **Retazos / sobrantes (E9 + E24)**: the shop's leftovers are extra stock.
+  Pass them with `--remnant PROFILE=MM[:LABEL]` (repeatable; label defaults to
+  `R-000n`) — or `extra_stock: [{profile, length_mm, label}]` on
+  `POST /v1/nest`. A finite pool: each piece is usable **once**, gets the same
+  kerf/trims as a tramo, and the solver spends the **smallest fitting** one
+  first (big pieces stay free for big parts) — and, exactly like 2D, **only
+  when spending it removes a tramo**. The plan reports `new_bars_needed` (what
+  to BUY) separately from total bars, names every piece it consumed, draws each
+  bar at its own length, and reports the ones it declined. A retazo for a
   profile that isn't in the job is a warning, never an error.
-  **1D spends the rack UNCONDITIONALLY — and unlike 2D, this is a KNOWN DEFECT,
-  not a deliberate rule.**
 
-  > **Measured, not suspected.** `_open_bar` (`nester/tube/packing.py`) takes
-  > the smallest fitting remnant whenever a part needs a new bar, without ever
-  > asking whether that removes a tramo from the purchase. On this file's own
-  > Pantallas_LED demo BOM (kerf 0.2, back-trim 300), sweeping one retazo from
-  > 400 to 5000 mm: **18 of 24 sizes are spent for nothing** — `new_bars_needed`
-  > stays 5 and reported yield falls by up to **11.3 points** — 3 sizes remove a
-  > tramo, 3 are never opened. The penalty grows monotonically with retazo size
-  > right up to the point where the piece is finally big enough to save a bar,
-  > so the bigger the offcut a shop offers, the harder the plan punishes it.
+  > **The decline rule (E24) — the 1D half of the same doctrine.** `minimize_bars`
+  > (CLI `--minimize-bars`, **on by default**) packs the job three ways: no rack
+  > (`B0`), full rack (`B_full`), and — when the rack wins — a greedy **minimal
+  > subset**, dropping the LONGEST pieces whose removal does not make the answer
+  > worse. FFD is milliseconds, so the repacks are free. "Better" is
+  > `(unplaceable parts, tramos to buy)` lexicographically, so a piece that
+  > rescues a part no tramo could hold is also worth opening. The subset is found
+  > by re-packing, not by testing pieces one at a time: **two offcuts can remove a
+  > tramo together while neither does alone** (pinned in
+  > `tests/test_tube_decline.py`).
   >
-  > It is the same pathology E23 fixed in 2D, and the 2D decline rule is the
-  > shape of the fix. **Deliberately NOT fixed in the E23 round** — the tube
-  > solver, its frozen `/nest` contract and Harriet all sit behind it, so it is
-  > its own round with its own gates.
+  > Measured on a 6 m job (BOM 1850×14 · 1200×22 · 900×18 · 2400×9 · 640×26,
+  > kerf 0.2, back-trim 300; baseline **20 tramos, 89.0%**), sweeping ONE offered
+  > offcut, before → after:
   >
-  > 1D also has no net/gross split at all: the plan's `APROV.` is
-  > `parts ÷ (new_len + rem_len)`, with retazo length in the denominator and no
-  > `devuelto` discount — the design's `aprovNeto = piezasLen ÷ (comprado −
-  > devuelto)` is unimplemented here, and the plan's own footnote says so.
+  > | offcut | old rule | new rule |
+  > |--------|----------|----------|
+  > | 1000 mm | spent · BUY 20 · 88.2% (**−0.7pp**) | declined `no_gain` · BUY 20 · 89.0% |
+  > | 2200 mm | spent · BUY 20 · 87.3% (**−1.6pp**) | declined `no_gain` · BUY 20 · 89.0% |
+  > | 3000 mm | spent · BUY 20 · 86.8% (**−2.2pp**) | declined `no_gain` · BUY 20 · 89.0% |
+  > | 3400 mm | spent · BUY **19** · 90.9% | spent · BUY **19** · 90.9% |
+  >
+  > Swept 500–6000 mm in 100 mm steps: **6 of 15 sizes used to be spent for
+  > nothing, now 0** — every size either removes a tramo or stays on the rack. On
+  > a denser BOM the old rule wasted 11 of 15 sizes, up to −7.1pp. The penalty
+  > grew monotonically with offcut size, so the bigger the piece a shop offered,
+  > the harder the plan punished it.
+  >
+  > `remnants_unused[].reason` mirrors 2D: `no_gain` · `no_fit` (nothing in the
+  > job fits it) · `too_small_for_trims` · `job_ended`. `--no-minimize-bars`
+  > restores the old unconditional spending (pinned by a test).
+- **Sobrante recuperable / net yield (E24)**: `--min-remnant MM` (CLI default
+  **200**, API/`StockSpec` default 0) is the shortest drop worth keeping. At or
+  above it a bar's drop is a recoverable **SOBRANTE** that goes back on the
+  rack; below it, **MERMA**. It is NOT `--back-trim` (the chuck dead zone) and
+  must never be overloaded onto it. From it come the additive metrics
+  `net_yield_pct = parts ÷ (stock − reclaimable)` and `gross_yield_pct`
+  (identical to `yield_pct`), plus `reclaimable` / `waste` per profile and
+  `leftover_mm` / `waste_mm` per bar. **`yield_pct` keeps its exact name,
+  meaning and value** — Harriet's frozen `/nest` reads it, and with no
+  `min_remnant` net == gross, so nothing moved for existing callers.
 - **Allowances**: `--kerf` per cut, `--front-trim` (clamp dead zone),
   `--back-trim` (far-end remnant). Usable = bar length − front − back (for a
   retazo too). Each part reserves `length + kerf`.
@@ -113,6 +134,7 @@ IGES files ──▶ extract cut length ──▶ group by profile ──▶ pac
 cd ~/Documents/Nester
 .venv/bin/python -m nester.tube <files|globs|dir> \
   --stock-length 6000 --kerf 0.2 --front-trim 0 --back-trim 0 \
+  --min-remnant 200 --remnant 40x40x2=3400:R-0001 \
   --out output --name <job-name> --lang es
 ```
 
@@ -318,7 +340,7 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   must be unique) — or `extra_sheets: [{width_mm, height_mm, label}]` on
   `POST /v1/jobs`. A finite pool: each piece is usable **once**, and the solver
   spends the **smallest fitting** one first (big retazos stay free for big
-  parts) — but, unlike 1D, **only when spending it removes a purchase**.
+  parts) — and, like 1D since E24, **only when spending it removes a purchase**.
 
   > **The decline rule (E23) — this is the 2D doctrine, not an optimization.**
   > A retazo is opened only if opening it lowers `sheets_to_buy`. One that would
@@ -433,7 +455,7 @@ while `--fill-free-area` keeps the cheap win.
 | What | Where |
 |------|-------|
 | **Tube (1D)** — data model (Part, StockSpec, BarLayout, ProfileResult) | `nester/tube/model.py` |
-| Cutting-stock solver (FFD) | `nester/tube/packing.py` |
+| Cutting-stock solver (FFD + the retazo decline rule) | `nester/tube/packing.py` |
 | IGES reader (length extraction) | `nester/tube/iges.py` |
 | Filename → profile | `nester/tube/profile.py` |
 | CLI | `nester/tube/cli.py` (`python -m nester.tube`) |
