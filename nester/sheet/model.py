@@ -291,7 +291,7 @@ class SheetLayout:
     @property
     def used_area(self) -> float:
         """Net part area placed on this sheet (mm²)."""
-        return sum(p.part.area for p in self.placements)
+        return sum((p.part.area for p in self.placements), 0.0)
 
     @property
     def utilization(self) -> float:
@@ -389,18 +389,18 @@ class NestResult:
 
     @property
     def total_part_area(self) -> float:
-        return sum(s.used_area for s in self.sheets)
+        return sum((s.used_area for s in self.sheets), 0.0)
 
     @property
     def total_sheet_area(self) -> float:
         """Area of the stock actually opened — sums the sheets, since a job
         that eats retazos has more than one sheet size in play."""
-        return sum(s.spec.area for s in self.sheets)
+        return sum((s.spec.area for s in self.sheets), 0.0)
 
     @property
     def new_sheet_area(self) -> float:
         """Area of the sheets to buy — what procurement pays for."""
-        return sum(s.spec.area for s in self.sheets if not s.is_remnant)
+        return sum((s.spec.area for s in self.sheets if not s.is_remnant), 0.0)
 
     @property
     def in_hole_count(self) -> int:
@@ -414,7 +414,7 @@ class NestResult:
 
     @property
     def reclaimable_area(self) -> float:
-        return sum(lo.area for _n, lo in self.reclaimable)
+        return sum((lo.area for _n, lo in self.reclaimable), 0.0)
 
     @property
     def can_weigh(self) -> bool:
@@ -428,12 +428,12 @@ class NestResult:
     @property
     def stock_weight_kg(self) -> float:
         """Mass of all stock opened, retazos included (kg)."""
-        return sum(s.stock_weight_kg for s in self.sheets)
+        return sum((s.stock_weight_kg for s in self.sheets), 0.0)
 
     @property
     def new_stock_weight_kg(self) -> float:
         """Mass of the sheets to buy (kg) — the number that goes on a purchase order."""
-        return sum(s.stock_weight_kg for s in self.sheets if not s.is_remnant)
+        return sum((s.stock_weight_kg for s in self.sheets if not s.is_remnant), 0.0)
 
     @property
     def drop_weight_kg(self) -> float:
@@ -484,7 +484,7 @@ class NestResult:
     @property
     def rack_stock_weight_kg(self) -> float:
         """Mass that came off the rack rather than off a purchase order (kg)."""
-        return sum(s.stock_weight_kg for s in self.sheets if s.is_remnant)
+        return sum((s.stock_weight_kg for s in self.sheets if s.is_remnant), 0.0)
 
     @property
     def reclaimable_weight_kg(self) -> float:
