@@ -66,7 +66,7 @@ IGES files ──▶ extract cut length ──▶ group by profile ──▶ pac
   grouped and nested independently.
 - **Juegos (E22)**: quantity comes from the filename, which the shop can't
   rename — so a per-file multiplier says how many sets to build: `--sets
-  FILENAME=N` (repeatable; `sets` on an API FileRef, 1–500). Effective qty =
+  FILENAME=N` (repeatable; `sets` on an API FileRef, 1–999). Effective qty =
   filename qty × sets (`_2pz` × 50 juegos = 100 pieces), multiplied **before**
   nesting so the bars to buy scale with it.
 - **Stock** = one full-bar (tramo) length per profile (global `--stock-length`,
@@ -247,12 +247,48 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   Grain-lock for brushed finish or bend-grain parts.
 - **Spacing**: `--margin` (edge) + `--gap` (part-to-part, keep ≥ kerf →
   spyrrow `min_items_separation`). Kerf compensation itself is the CAM's job.
+- **Menos láminas que comprar (E23)**: `minimize_sheets` (CLI
+  `--minimize-sheets`, API field; **on by default**) turns the multi-sheet loop
+  from a greedy walk into a **search for the lowest bought-sheet count**. It
+  re-nests under a *ceiling* on new sheets — starting at the area floor
+  (`net part area − rack area) / usable sheet area`), jumping on the yield it
+  actually observed rather than stepping +1, and descending while the job stays
+  feasible. `--max-new-sheets` (40) and `--search-budget SEC` (0 = none) bound
+  it; on either limit the best **feasible** nest comes back with
+  `totals.search.capped = true`, and if nothing was feasible the fallback is the
+  unbounded greedy walk, so a job is never failed for the search running out of
+  road. `totals.search` reports `area_floor_sheets · ceiling_tried ·
+  ceiling_used · attempts · capped` (`-1` in `ceiling_tried` = the unbounded
+  fallback; `0` is a real ceiling meaning "buy nothing"). `--no-minimize-sheets`
+  restores the old loop exactly. **Measured caveat:** on rectangle-heavy jobs
+  spyrrow already packs each sheet to the area floor, so the ceiling ladder
+  usually *proves* the count rather than lowering it — the wins that showed up
+  in measurement are the free-area top-up and the rack decision below.
+- **Relleno del área libre (E23)**: spyrrow 0.9 exposes only
+  `StripPackingInstance.solve` — no bin packing, no fixed container, no way to
+  hand it a partially-occupied sheet — so denying a job a sheet does not make it
+  pack denser, it just makes it fail. The mechanism is ours: after each solve,
+  `nester/sheet/holes.py` fills `sheet usable rect − union(placed ⊕ gap)` with
+  still-unplaced parts, the same bounded shapely search E15 uses on holes.
+  Parts landing there are **ordinary parts** — no `in_hole_of`, not counted in
+  `parts_in_holes`; only the hole container flags a part. It only APPENDS, so it
+  cannot make a sheet worse. `--min-hole-side MM` (30) is the shortest side a
+  void needs before either container will look at it: a bolt hole is not usable
+  surface, and sweeping it costs real time.
 - **Retazos de lámina (E16)**: the shop's sheet offcuts are extra stock. Pass
   them with `--remnant WxH[:LABEL]` (repeatable; label defaults to `R-000n`,
   must be unique) — or `extra_sheets: [{width_mm, height_mm, label}]` on
   `POST /v1/jobs`. A finite pool: each piece is usable **once**, and the solver
-  spends the **smallest fitting** one before buying a new sheet (big retazos
-  stay free for big parts — same rule as 1D). Sheets in one job therefore need
+  spends the **smallest fitting** one first (big retazos stay free for big
+  parts — same rule as 1D) — but only **when spending it removes a purchase**.
+  That condition is E23's other half and it is load-bearing: opening an offcut
+  that does not lower `sheets_to_buy` costs the shop a physical piece AND adds
+  it to the denominator, which is exactly how the old engine turned a rack into
+  a 7-point yield drop. A retazo that would buy nothing back stays on the rack
+  and is reported in `remnants_unused` with `reason: "no_gain"` (the other
+  reasons are `no_fit`, `too_small_for_margin`, `job_ended`). The rack IS spent
+  unconditionally when it is load-bearing — a part that fits an offcut but no
+  new sheet — and on `--no-minimize-sheets`. Sheets in one job therefore need
   not be the same size: every `SheetLayout` carries its own `spec` + `source`,
   and area/weight totals SUM the layouts instead of multiplying a count. The
   plan reports `new_sheets_needed` (what to BUY) separately from total sheets,
@@ -288,14 +324,27 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   no known density OR no thickness the plan reports **no kilos at all** and says
   why — never a guessed one, because an invented kilo figure becomes a wrong
   purchase order. `weight = area × thickness × density`.
+- **Neto vs bruto (E23)**: the design's *Métricas 2D*. `areaTotal` sums each
+  sheet's OWN size; `areaDevuelta` is the reclaimable leftovers; **`neto =
+  areaPz / (areaTotal − areaDevuelta)`** is the headline and `bruto = areaPz /
+  areaTotal` sits beside it. The denominator discounts what goes back on the
+  rack — the same rule the tube tool applies — and it is what stops a
+  rack-using job from being penalised. In JSON: `totals.net_yield_pct`,
+  `gross_yield_pct`, `part_area_mm2`, `stock_area_mm2`, `new_stock_area_mm2`,
+  `consumed_area_mm2`, `waste_area_mm2`, plus `from_rack_kg` / `leftover_kg` /
+  `waste_kg` when the job can be weighed. **`yield_pct` and `drop_kg` keep their
+  original name, meaning and value** — the new keys sit beside them, they never
+  redefine them. `--kerf MM` is **reported only** (`params.kerf_mm`) so the shop
+  can check the gap clears it; kerf compensation stays the CAM's job.
 - **Output**: cut-plan PDF + `_nido.json` + **one nested DXF per sheet**
   (`_S01.dxf`, layers preserved) for the shop's CAM.
 
 ```bash
 .venv/bin/python -m nester.sheet <dxf files|dir> \
   --sheet 2440x1220 --material acero --thickness 2 \
-  --margin 8 --gap 3 --rotate free --time 4 \
+  --margin 8 --gap 3 --rotate free --time 4 --kerf 0.2 \
   --remnant 1220x600:R-0007 --nest-in-holes --min-remnant 200 \
+  --min-hole-side 30 --max-new-sheets 40 --search-budget 0 \
   --out output --name <job> --lang es
 ```
 
@@ -303,17 +352,23 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   `progress=cb` — called with a `NestProgress(sheets_done,
   sheets_total_estimate, parts_placed, parts_total,
   last_sheet_utilization_pct)` after **each sheet is solved** — and
-  `should_cancel=fn`, checked **between sheets**, which raises `NestCancelled`
-  carrying the partial `NestResult`. `sheets_total_estimate` really is an
-  estimate: the multi-sheet loop can't know the total up front, so it's
-  projected from net part area landed per sheet vs area still queued. Mid-sheet
+  `should_cancel=fn`, checked **between sheets and between search attempts**,
+  which raises `NestCancelled` carrying the best `NestResult` so far.
+  `sheets_total_estimate` is projected from net part area landed per sheet vs
+  area still queued, and under a ceiling it is bounded by that ceiling instead —
+  a real limit, not a projection. With the search on there are several attempts,
+  so a tick also carries `attempt` and `new_sheet_ceiling`: `sheets_done`
+  restarting at 0 is a NEW pass, not the solve going backwards. Mid-sheet
   interruption is impossible — one spyrrow solve is an opaque, time-budgeted
   call. The async jobs API is the only caller.
 
 Remaining limits: one material/thickness per job; nesting is stochastic within
 `--time` (yield varies with the time budget even at a fixed `--seed`, because
 the budget is wall-clock — try a couple of seeds for production); hole nesting
-and retazo consumption are both greedy first-fit, not optimal.
+and the free-area top-up are both bounded first-fit searches, not optima; and
+the sheet search costs **2–4 full re-solves** (measured mean 2.0, ~1.7–2.4x the
+greedy wall clock) — real money on a 2-worker Render box, which is what
+`--search-budget` / `sheet_search_budget_s` exist to cap.
 
 ## File map
 
@@ -330,10 +385,11 @@ and retazo consumption are both greedy first-fit, not optimal.
 | **Material densities** — trade-name → kg/m³ (shared, drives all weights) | `nester/materials.py` |
 | **Flat (2D)** — data model (FlatPart, SheetSpec, ExtraSheet, Leftover, Placement, NestResult) | `nester/sheet/model.py` |
 | DXF reader (contours + holes, layer-classified) | `nester/sheet/dxf_read.py` |
-| Irregular nester (spyrrow wrapper + multi-sheet fill, retazo pool, progress/cancel) | `nester/sheet/pack.py` |
-| Part-in-hole second pass (shapely containment search) | `nester/sheet/holes.py` |
+| Irregular nester (spyrrow wrapper + sheet-count search, retazo pool, progress/cancel) | `nester/sheet/pack.py` |
+| Void filling: part-in-hole (E15) + free-area top-up (E23), one shapely search | `nester/sheet/holes.py` |
 | Part silhouettes for the API (decimation, holes, origin) | `nester/sheet/contour.py` |
-| PDF + JSON output (portada + a drawing sheet per lámina, real silhouettes) | `nester/sheet/report.py` |
+| **JSON contract** the web product + jobs API parse (additive only) | `nester/sheet/result_json.py` |
+| PDF output (portada + a drawing sheet per lámina, real silhouettes) | `nester/sheet/report.py` |
 | Nested DXF-per-sheet output | `nester/sheet/dxf_out.py` |
 | CLI | `nester/sheet/cli.py` (`python -m nester.sheet`) |
 | Print design tokens + canvas primitives (shared PDF vocabulary) | `nester/_pdfstyle.py` |
@@ -392,11 +448,19 @@ Body = the `/v1/nest` envelope + sheet stock (`sheet_width_mm`,
 `out_prefix` is **required** (artifacts *and* the job record land under it).
 Statuses: `queued · running · done · error · cancelled · lost`.
 
-The 2D engine options ride the same body, all optional and all defaulting to
-today's behaviour: `extra_sheets: [{width_mm, height_mm, label}]` (retazos,
-≤200, unique labels case-insensitively, 422 otherwise), `nest_in_holes` (bool),
-`min_remnant_mm` (≥0), `density_kg_m3` (>0; overrides what `material`
-resolves to). **`GET /v1/materials`** returns the density catalog, and
+The 2D engine options ride the same body, all optional: `extra_sheets:
+[{width_mm, height_mm, label}]` (retazos, ≤200, unique labels
+case-insensitively, 422 otherwise), `nest_in_holes` (bool), `min_remnant_mm`
+(≥0), `density_kg_m3` (>0; overrides what `material` resolves to), and the E23
+search knobs — **`minimize_sheets` (bool, default TRUE)**, `max_new_sheets`
+(1–200, default 40), `sheet_search_budget_s` (0–1800, 0 = unbounded),
+`min_hole_side_mm` (≥0, default 30) and `kerf_mm` (≥0, **reported only**,
+surfacing as `result.params.kerf_mm` — the engine never applies kerf
+compensation). Out-of-range values are 422. `minimize_sheets` defaults ON
+deliberately: sheet mode has only this product's own two clients and Harriet's
+frozen surface never reaches it. `GET /v1/jobs/{id}`'s `progress` gains
+`attempt` + `new_sheet_ceiling`, because a second search attempt restarts
+`sheets_done` at zero. **`GET /v1/materials`** returns the density catalog, and
 `?name=` resolves one free-text name — `resolved: null` is a real answer
 meaning "cannot be weighed", which is what keeps the AI from inventing a
 density (the product rule is that the AI never produces a number).
@@ -422,7 +486,7 @@ budget first. Upgrade path (jobs table in Postgres + a Render worker) is in the
 module docstring; the HTTP contract is written to survive it unchanged.
 
 **Juegos / sets (E22).** Every `/v1` FileRef takes an optional `sets` (int,
-1–500, default 1, 422 outside) on `extract`, `nest` and `jobs`, both modes:
+1–999, default 1, 422 outside) on `extract`, `nest` and `jobs`, both modes:
 effective qty = filename qty × sets, multiplied before the solver runs.
 `/v1/extract` reports `qty_from_name` and `sets` next to the EFFECTIVE `qty`
 (unchanged meaning) so a UI can render "2 × 50 = 100". Harriet's contract has

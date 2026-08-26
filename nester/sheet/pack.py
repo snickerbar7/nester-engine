@@ -651,7 +651,7 @@ def _search(
         # back to the unbounded greedy walk, which is exactly what this module
         # did before the search existed.
         state["capped"] = True
-        best, _owed = attempt_fn(None, state["attempts"] + 1, None)
+        best, _owed = run(None, None)     # recorded as -1: the unbounded walk
         best_n = None                     # no ceiling produced this layout
 
     best.search = SearchInfo(

@@ -126,6 +126,41 @@ def test_the_new_sheet_options_default_to_off(client, solved):
     assert kw["density"] is None
 
 
+def test_the_sheet_search_options_default_to_the_product_rule(client, solved):
+    """minimize_sheets defaults TRUE — sheet mode has only this product's own
+    clients, and Harriet's frozen surface never reaches it."""
+    assert submit(client, body()).status_code == 202
+    kw = wait_for(solved, "minimize_sheets")
+    assert kw["minimize_sheets"] is True
+    assert kw["max_new_sheets"] == 40
+    assert kw["search_budget_s"] == 0.0
+    assert kw["min_hole_side"] == 30.0
+    assert kw["kerf"] == 0.0
+
+
+def test_the_sheet_search_options_reach_the_solve(client, solved):
+    assert submit(client, body(minimize_sheets=False, max_new_sheets=12,
+                               sheet_search_budget_s=120, min_hole_side_mm=45,
+                               kerf_mm=0.2)).status_code == 202
+    kw = wait_for(solved, "minimize_sheets")
+    assert kw["minimize_sheets"] is False
+    assert kw["max_new_sheets"] == 12
+    assert kw["search_budget_s"] == 120.0
+    assert kw["min_hole_side"] == 45.0
+    # kerf is REPORTED, never applied: it reaches the engine only so the plan
+    # can show it next to the gap. Kerf compensation stays the CAM's job.
+    assert kw["kerf"] == 0.2
+
+
+@pytest.mark.parametrize("bad", [
+    {"max_new_sheets": 0}, {"max_new_sheets": 201},
+    {"sheet_search_budget_s": -1}, {"sheet_search_budget_s": 1801},
+    {"min_hole_side_mm": -1}, {"kerf_mm": -0.1},
+])
+def test_out_of_range_search_options_are_422(client, solved, bad):
+    assert submit(client, body(**bad)).status_code == 422
+
+
 def test_holes_and_min_remnant_and_density_reach_the_solve(client, solved):
     assert submit(client, body(nest_in_holes=True, min_remnant_mm=250,
                                density_kg_m3=7930)).status_code == 202
@@ -305,6 +340,31 @@ def test_hole_and_remnant_options_reach_the_packer(fake_nest):
     run_nest(nest_in_holes=True, min_remnant=250.0, material="acero", thickness=2)
     assert fake_nest.kwargs["nest_in_holes"] is True
     assert fake_nest.kwargs["min_remnant"] == 250.0
+
+
+def test_the_search_options_reach_the_packer_and_kerf_does_not(fake_nest):
+    out = run_nest(minimize_sheets=True, max_new_sheets=15, search_budget_s=90,
+                   min_hole_side=25.0, kerf=0.3)
+    assert fake_nest.kwargs["minimize_sheets"] is True
+    assert fake_nest.kwargs["max_new_sheets"] == 15
+    assert fake_nest.kwargs["search_budget_s"] == 90
+    assert fake_nest.kwargs["min_hole_side"] == 25.0
+    # the packer is never handed a kerf — it only surfaces in the plan
+    assert "kerf" not in fake_nest.kwargs
+    assert out["result"]["params"]["kerf_mm"] == 0.3
+
+
+def test_parts_report_their_holes_so_a_client_need_not_measure_a_decimated_ring(
+        fake_nest):
+    """`contour` is decimated for drawing; measuring it would quietly disagree
+    with what the engine decided. So the real numbers ride alongside it."""
+    out = run_nest(include_contours=True)
+    parts = {p["name"]: p for p in out["result"]["parts"]}
+    host, slug = parts["host.dxf"], parts["slug.dxf"]
+    assert host["max_hole_side_mm"] == 60.0        # the 60x60 hole in a 100 square
+    assert host["hole_area_mm2"] == 3600.0
+    assert slug["max_hole_side_mm"] is None        # solid part: absent, not zero
+    assert slug["hole_area_mm2"] == 0.0
 
 
 def test_the_report_is_told_the_job_settings_it_cannot_read_off_the_stock(
