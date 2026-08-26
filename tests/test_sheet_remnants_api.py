@@ -131,6 +131,7 @@ def test_the_sheet_search_options_default_to_the_product_rule(client, solved):
     clients, and Harriet's frozen surface never reaches it."""
     assert submit(client, body()).status_code == 202
     kw = wait_for(solved, "minimize_sheets")
+    assert kw["fill_free_area"] is True
     assert kw["minimize_sheets"] is True
     assert kw["max_new_sheets"] == 40
     assert kw["search_budget_s"] == 0.0
@@ -139,11 +140,13 @@ def test_the_sheet_search_options_default_to_the_product_rule(client, solved):
 
 
 def test_the_sheet_search_options_reach_the_solve(client, solved):
-    assert submit(client, body(minimize_sheets=False, max_new_sheets=12,
+    assert submit(client, body(minimize_sheets=False, fill_free_area=False,
+                               max_new_sheets=12,
                                sheet_search_budget_s=120, min_hole_side_mm=45,
                                kerf_mm=0.2)).status_code == 202
     kw = wait_for(solved, "minimize_sheets")
     assert kw["minimize_sheets"] is False
+    assert kw["fill_free_area"] is False
     assert kw["max_new_sheets"] == 12
     assert kw["search_budget_s"] == 120.0
     assert kw["min_hole_side"] == 45.0
@@ -340,6 +343,16 @@ def test_hole_and_remnant_options_reach_the_packer(fake_nest):
     run_nest(nest_in_holes=True, min_remnant=250.0, material="acero", thickness=2)
     assert fake_nest.kwargs["nest_in_holes"] is True
     assert fake_nest.kwargs["min_remnant"] == 250.0
+
+
+def test_the_top_up_is_its_own_switch_on_the_service_too(fake_nest):
+    """It must be settable independently of the search, in both directions."""
+    run_nest(minimize_sheets=False, fill_free_area=True)
+    assert fake_nest.kwargs["minimize_sheets"] is False
+    assert fake_nest.kwargs["fill_free_area"] is True
+    run_nest(minimize_sheets=True, fill_free_area=False)
+    assert fake_nest.kwargs["minimize_sheets"] is True
+    assert fake_nest.kwargs["fill_free_area"] is False
 
 
 def test_the_search_options_reach_the_packer_and_kerf_does_not(fake_nest):

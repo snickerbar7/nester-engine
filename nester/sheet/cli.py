@@ -104,6 +104,7 @@ def main(argv: List[str] | None = None) -> int:
                       seed=args.seed, extra_sheets=remnants,
                       nest_in_holes=args.nest_in_holes,
                       min_remnant=args.min_remnant,
+                      fill_free_area=args.fill_free_area,
                       minimize_sheets=args.minimize_sheets,
                       max_new_sheets=args.max_new_sheets,
                       search_budget_s=args.search_budget,
@@ -169,6 +170,7 @@ def _meta(args) -> dict:
         "time_per_sheet": args.time,
         "nest_in_holes": bool(args.nest_in_holes),
         "min_remnant": args.min_remnant,
+        "fill_free_area": bool(args.fill_free_area),
         "minimize_sheets": bool(args.minimize_sheets),
         "max_new_sheets": args.max_new_sheets,
         "min_hole_side": args.min_hole_side,
@@ -215,11 +217,21 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="also nest small parts INSIDE the holes of placed parts. "
                         "Off by default: those parts come out inside a slug, so "
                         "the operator has to be told (the plan says so).")
+    p.add_argument("--fill-free-area", dest="fill_free_area",
+                   action=argparse.BooleanOptionalAction, default=True,
+                   help="after each sheet is solved, put still-unplaced parts in "
+                        "the space the packer left empty (default on). Independent "
+                        "of --minimize-sheets: this pass, not the sheet search, is "
+                        "what raised yield in measurement. It only ever adds parts, "
+                        "so it cannot make a sheet worse.")
     p.add_argument("--minimize-sheets", dest="minimize_sheets",
                    action=argparse.BooleanOptionalAction, default=True,
                    help="search for the FEWEST new sheets the job fits in, instead "
                         "of walking greedily until the parts run out (default on). "
-                        "--no-minimize-sheets restores the old greedy loop.")
+                        "Also decides whether a retazo is worth opening at all: "
+                        "one that would not remove a purchase stays on the rack. "
+                        "--no-minimize-sheets restores the greedy loop AND "
+                        "unconditional rack spending.")
     p.add_argument("--max-new-sheets", type=int, default=DEFAULT_MAX_NEW_SHEETS,
                    metavar="N",
                    help=f"ceiling the sheet search will never look past "

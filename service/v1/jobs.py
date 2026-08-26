@@ -151,11 +151,17 @@ class SheetJobParams:
     nest_in_holes: bool = False
     min_remnant: float = 0.0
     density: Optional[float] = None
+    # `fill_free_area` tops each solved sheet up in the space the packer left
+    # empty — independent of the search on purpose, because that pass (not the
+    # ceiling ladder) is what measurably raised yield.
+    #
     # How hard to look for the FEWEST new sheets. `minimize_sheets` off is the
-    # old greedy walk (a faster answer, not a better one); the other three bound
-    # the search so one request cannot monopolise a worker. `kerf` is REPORTED
+    # old greedy walk (a faster answer, not a better one) and also restores
+    # unconditional retazo spending; the other three bound the search so one
+    # request cannot monopolise a worker. `kerf` is REPORTED
     # only -- kerf compensation stays the CAM's job, so it never reaches the
     # solver, it only rides through to result.params.kerf_mm.
+    fill_free_area: bool = True
     minimize_sheets: bool = True
     max_new_sheets: int = 40
     search_budget_s: float = 0.0
@@ -430,6 +436,7 @@ def _run(job: Job) -> None:
             time_per_sheet=p.time_per_sheet, seed=p.seed,
             extra_sheets=p.extra_sheets, nest_in_holes=p.nest_in_holes,
             min_remnant=p.min_remnant, density=p.density,
+            fill_free_area=p.fill_free_area,
             minimize_sheets=p.minimize_sheets, max_new_sheets=p.max_new_sheets,
             search_budget_s=p.search_budget_s, min_hole_side=p.min_hole_side,
             kerf=p.kerf,

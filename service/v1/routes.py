@@ -184,13 +184,23 @@ class JobRequest(NestRequest):
                     "know. Omit and it is resolved from `material` (see "
                     "GET /v1/materials); with neither, the result simply carries "
                     "no weights — the service never invents a density.")
+    fill_free_area: bool = Field(
+        True,
+        description="after each sheet is solved, put still-unplaced parts into "
+                    "the space the packer left empty. INDEPENDENT of "
+                    "minimize_sheets: this pass, not the sheet search, is what "
+                    "raised yield in measurement, so turning the search off must "
+                    "not silently turn this off too. It only ever adds parts.")
     minimize_sheets: bool = Field(
         True,
         description="search for the FEWEST new sheets this job fits in, rather "
                     "than walking greedily until the parts run out. On by "
                     "default: sheet mode has only this product's own clients, "
-                    "and Harriet's frozen surface never reaches it. Set false "
-                    "for the old greedy loop — a faster answer, not a better one.")
+                    "and Harriet's frozen surface never reaches it. It also "
+                    "decides whether a retazo is worth opening: one that would "
+                    "not remove a purchase stays on the rack (reason 'no_gain'). "
+                    "Set false for the old greedy loop AND unconditional rack "
+                    "spending — a faster answer, not a better one.")
     max_new_sheets: int = Field(
         DEFAULT_MAX_NEW_SHEETS, ge=1, le=MAX_NEW_SHEETS_LIMIT,
         description="ceiling the search will never look past. Past it the greedy "
@@ -442,6 +452,7 @@ def create_job(req: JobRequest, client: Client = Depends(require_client)) -> Dic
         gap=req.gap_mm, rotate=req.rotate, time_per_sheet=req.time_per_sheet_s,
         seed=req.seed, extra_sheets=extra_sheets, nest_in_holes=req.nest_in_holes,
         min_remnant=req.min_remnant_mm, density=req.density_kg_m3,
+        fill_free_area=req.fill_free_area,
         minimize_sheets=req.minimize_sheets, max_new_sheets=req.max_new_sheets,
         search_budget_s=float(req.sheet_search_budget_s),
         min_hole_side=req.min_hole_side_mm, kerf=req.kerf_mm,

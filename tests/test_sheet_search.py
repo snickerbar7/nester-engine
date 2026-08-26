@@ -148,6 +148,54 @@ def test_minimize_sheets_off_is_the_old_greedy_walk_untouched():
     assert sum(s.part_count for s in result.sheets) == 20
 
 
+def test_both_switches_off_reproduce_the_pre_round_engine():
+    """The escape hatch has to be a real one: greedy sheet-by-sheet walk, rack
+    spent UNCONDITIONALLY smallest-first, and no top-up touching the layout."""
+    spec = SheetSpec(width=1000, height=1000, margin=5, part_gap=2)
+    parts = [FlatPart("a.dxf", rect(80, 40), qty=40)]
+    rack = [ExtraSheet(400, 300, "R-a")]        # nothing this job needs
+
+    old = nest(parts, spec, rotation="ortho", time_per_sheet=1, seed=0,
+               extra_sheets=rack, minimize_sheets=False, fill_free_area=False)
+
+    assert old.search.enabled is False
+    # unconditional spending: the offcut is opened even though it buys nothing
+    assert old.remnants_used == ["R-a"]
+    assert sum(s.part_count for s in old.sheets) == 40
+
+
+def test_the_top_up_is_not_gated_on_the_search():
+    """The measured yield gain came from the top-up, not the ceiling ladder. So
+    turning the search off must not silently turn the top-up off with it."""
+    spec = SheetSpec(width=1200, height=900, margin=8, part_gap=4)
+    parts = [FlatPart("placa.dxf", rect(560, 420), qty=6),
+             FlatPart("taco.dxf", rect(150, 110), qty=24)]
+    kw = dict(rotation="ortho", time_per_sheet=1, seed=0, min_remnant=150,
+              minimize_sheets=False)
+
+    bare = nest(parts, spec, fill_free_area=False, **kw)
+    topped = nest(parts, spec, fill_free_area=True, **kw)
+
+    assert sum(s.part_count for s in bare.sheets) == 30
+    assert sum(s.part_count for s in topped.sheets) == 30
+    # search OFF, and the top-up still consolidates the tail off the last sheet
+    assert topped.search.enabled is False
+    assert topped.sheets[-1].part_count <= bare.sheets[-1].part_count
+    assert topped.net_yield_pct >= bare.net_yield_pct - 1e-9
+    for layout in topped.sheets:
+        _assert_no_collisions(layout)
+
+
+def test_the_top_up_can_be_turned_off_while_the_search_stays_on():
+    spec = SheetSpec(width=1000, height=800, margin=5, part_gap=3)
+    parts = [FlatPart("a.dxf", rect(300, 200), qty=10)]
+    result = nest(parts, spec, rotation="ortho", time_per_sheet=1, seed=0,
+                  fill_free_area=False)
+
+    assert result.search.enabled is True
+    assert sum(s.part_count for s in result.sheets) == 10
+
+
 def test_the_search_is_bounded_and_returns_the_best_feasible_result():
     """A ceiling too low to be met is not a failure. With max_new_sheets pinned
     to 1 on a job that needs several, the search runs out of road, falls back to
@@ -393,6 +441,7 @@ def test_the_json_carries_the_new_totals_and_never_renames_the_old_ones():
     assert {"from_rack_kg", "leftover_kg", "waste_kg"} <= set(t)
     assert body["params"]["kerf_mm"] == 0.2
     assert body["params"]["minimize_sheets"] is True
+    assert body["params"]["fill_free_area"] is False   # absent in meta -> off
     assert body["params"]["min_hole_side_mm"] == 30
     assert [s["part_area_mm2"] for s in body["sheets"]] == [80_000, 10_000]
     assert [s["leftover_kind"] for s in body["sheets"]] == ["rack", "scrap"]

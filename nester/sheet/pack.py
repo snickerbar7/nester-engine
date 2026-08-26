@@ -173,6 +173,7 @@ def nest(
     extra_sheets: Sequence[ExtraSheet] = (),
     nest_in_holes: bool = False,
     min_remnant: float = 0.0,
+    fill_free_area: bool = True,
     minimize_sheets: bool = True,
     max_new_sheets: int = DEFAULT_MAX_NEW_SHEETS,
     search_budget_s: float = 0.0,
@@ -200,14 +201,26 @@ def nest(
     ``min_remnant`` (mm) is the shortest side worth reclaiming; above zero, each
     sheet reports the rectangle still left on it as a retazo candidate.
 
+    ``fill_free_area`` (default on) tops each solved sheet up in the space the
+    strip packer left EMPTY — see :func:`nester.sheet.holes.nest_into_free_area`.
+    It is deliberately INDEPENDENT of ``minimize_sheets``: measured on the
+    reproduction job, the yield gain (60.1% -> 63.1% net) came from this pass,
+    not from the ceiling ladder, so switching the search off must not silently
+    switch this off too. It only appends, so it cannot make a sheet worse.
+
     ``minimize_sheets`` (default on) searches for the LOWEST number of new
     sheets the job can be done in, instead of walking greedily until the parts
-    run out. See :func:`_search` for what that costs and why the greedy walk
-    could not answer the question. ``max_new_sheets`` bounds the search,
-    ``search_budget_s`` gives it a wall-clock cap (0 = none), and
-    ``min_hole_side`` (mm) is the shortest side a void must have before the
-    top-up pass will even look at it. Passing ``minimize_sheets=False`` restores
-    the old greedy loop exactly.
+    run out, and decides whether the rack is worth opening at all. See
+    :func:`_search` for what that costs, what it does NOT buy, and why the
+    greedy walk could not answer the question. ``max_new_sheets`` bounds the
+    search, ``search_budget_s`` gives it a wall-clock cap (0 = none), and
+    ``min_hole_side`` (mm) is the shortest side a void must have before either
+    top-up pass will look at it.
+
+    ``minimize_sheets=False`` restores the pre-search loop: greedy sheet by
+    sheet, and the retazo rack spent UNCONDITIONALLY (smallest fitting first)
+    rather than only when spending it removes a purchase. Together with
+    ``fill_free_area=False`` it reproduces the original engine exactly.
 
     ``progress`` is called with a :class:`NestProgress` after each sheet is
     solved; ``should_cancel`` is consulted before each sheet and between search
@@ -410,8 +423,10 @@ def nest(
                 nest_into_holes(layout, catalog, remaining, orient, gap, min_hole_side)
             # --- and the space it left plain empty. Appends only, so a sheet
             # can never come out worse for it; see nester/sheet/holes.py for
-            # why the engine itself cannot be asked to do this.
-            if minimize_sheets and layout.placements:
+            # why the engine itself cannot be asked to do this. Independent of
+            # the search on purpose: measured on the reproduction job, the +3
+            # yield points came from THIS, not from the ceiling ladder.
+            if fill_free_area and layout.placements:
                 nest_into_free_area(
                     layout, catalog, remaining, orient, gap,
                     (margin, margin, stock.width - margin, stock.height - margin),

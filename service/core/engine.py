@@ -471,6 +471,7 @@ def nest_sheet(
     extra_sheets: Optional[List[Dict[str, Any]]] = None,
     nest_in_holes: bool = False,
     min_remnant: float = 0.0,
+    fill_free_area: bool = True,
     minimize_sheets: bool = True,
     max_new_sheets: int = DEFAULT_MAX_NEW_SHEETS,
     search_budget_s: float = 0.0,
@@ -493,10 +494,14 @@ def nest_sheet(
     reclaimable offcut. ``density`` (kg/m3) overrides what ``material`` resolves
     to — with neither, the job simply reports no weights (E8).
 
+    ``fill_free_area`` (on by default) tops each solved sheet up in the space
+    the packer left empty; it is independent of ``minimize_sheets`` because it,
+    not the sheet search, is what raised yield in measurement.
     ``minimize_sheets`` (on by default) searches for the fewest NEW sheets the
-    job can be done in instead of walking greedily; ``max_new_sheets`` and
-    ``search_budget_s`` bound that search and ``min_hole_side`` is the shortest
-    side a void must have to be worth filling. ``kerf`` is carried through to
+    job can be done in instead of walking greedily, and decides whether a retazo
+    is worth opening; ``max_new_sheets`` and ``search_budget_s`` bound that
+    search and ``min_hole_side`` is the shortest side a void must have to be
+    worth filling. ``kerf`` is carried through to
     ``result.params.kerf_mm`` for the client to compare against the part gap —
     the engine never applies kerf compensation, which stays the CAM's job.
 
@@ -540,6 +545,7 @@ def nest_sheet(
         result = _sheet_nest(parts, spec, rotation=rotate, time_per_sheet=time_per_sheet,
                              seed=seed, extra_sheets=_sheet_remnants(extra_sheets),
                              nest_in_holes=nest_in_holes, min_remnant=min_remnant,
+                             fill_free_area=fill_free_area,
                              minimize_sheets=minimize_sheets,
                              max_new_sheets=max_new_sheets,
                              search_budget_s=search_budget_s,
@@ -558,6 +564,7 @@ def nest_sheet(
         # in meta, which is what the report echoes into the plan's parameters.
         meta = {"generated": "", "lang": lang, "rotation": rotate,
                 "nest_in_holes": nest_in_holes, "min_remnant": min_remnant,
+                "fill_free_area": fill_free_area,
                 "minimize_sheets": minimize_sheets, "max_new_sheets": max_new_sheets,
                 "min_hole_side": min_hole_side, "kerf": kerf}
         result_json = _sheet_as_dict(result, job_name, meta)
