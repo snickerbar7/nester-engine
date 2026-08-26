@@ -46,7 +46,13 @@ DEFAULT_QTY_REGEX = r"[_\-](?P<qty>\d+)\s*(?:pz|pcs|pza|x)\b"
 #
 # It multiplies demand BEFORE nesting — raw material scales with it, which is
 # the whole point.
-MAX_SETS = 500
+#
+# The bound is a VALIDATION range, not an arithmetic one: the multiplication
+# itself is unbounded. It is 999 because that is the range the shop-facing UI
+# offers ("Entrada válida 1–999"), and a number the product accepts and stores
+# must not fail later at the engine. `sets` exists only on `/v1`; Harriet's
+# frozen contract has no such field.
+MAX_SETS = 999
 
 
 class ProfileParseError(ValueError):
