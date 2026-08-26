@@ -80,6 +80,11 @@ IGES files ──▶ extract cut length ──▶ group by profile ──▶ pac
   `new_bars_needed` (what to BUY) separately from total bars, names every
   retazo it consumed, and draws each bar at its own length. A retazo for a
   profile that isn't in the job is a warning, never an error.
+  **1D spends the rack UNCONDITIONALLY, and that is correct here** — do not
+  "fix" it to match 2D. FFD on a bar is tight enough that a consumed retazo
+  really does take parts off a new bar; measured on a deliberately adversarial
+  job, spending retazos never left `new_bars_needed` unchanged (see the E23
+  note in the 2D section for the 2D pathology and why it does not arise here).
 - **Allowances**: `--kerf` per cut, `--front-trim` (clamp dead zone),
   `--back-trim` (far-end remnant). Usable = bar length − front − back (for a
   retazo too). Each part reserves `length + kerf`.
@@ -247,11 +252,27 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   Grain-lock for brushed finish or bend-grain parts.
 - **Spacing**: `--margin` (edge) + `--gap` (part-to-part, keep ≥ kerf →
   spyrrow `min_items_separation`). Kerf compensation itself is the CAM's job.
+- **Relleno del área libre (E23)** — `--fill-free-area` / `fill_free_area`,
+  **on by default, and independent of the search below**. spyrrow 0.9 exposes
+  only `StripPackingInstance.solve`: no bin packing, no fixed container, no way
+  to hand it a partially-occupied sheet or a set of obstacles. So a part the
+  packer leaves in the gaps of sheet 1 is stranded there forever, and *denying*
+  a job a sheet does not make it pack denser — it just makes it fail. The
+  mechanism is ours: after each solve, `nester/sheet/holes.py` fills
+  `sheet usable rect − union(placed ⊕ gap)` with still-unplaced parts, the same
+  bounded shapely search E15 uses on holes. Parts landing there are **ordinary
+  parts** — no `in_hole_of`, not counted in `parts_in_holes`; only the hole
+  container flags a part. It only APPENDS, so a sheet can never come out worse.
+  `--min-hole-side MM` (30) is the shortest side a void needs before either
+  container will look at it: a bolt hole is not usable surface, and sweeping it
+  costs real time. **This pass, not the sheet search, is what raises yield**
+  (measured: 60.1% → 63.1% net for **1.10×** the wall clock), which is why it
+  has its own switch — turning the search off must not silently turn this off.
 - **Menos láminas que comprar (E23)**: `minimize_sheets` (CLI
   `--minimize-sheets`, API field; **on by default**) turns the multi-sheet loop
   from a greedy walk into a **search for the lowest bought-sheet count**. It
   re-nests under a *ceiling* on new sheets — starting at the area floor
-  (`net part area − rack area) / usable sheet area`), jumping on the yield it
+  (`(net part area − rack area) / usable sheet area`), jumping on the yield it
   actually observed rather than stepping +1, and descending while the job stays
   feasible. `--max-new-sheets` (40) and `--search-budget SEC` (0 = none) bound
   it; on either limit the best **feasible** nest comes back with
@@ -260,35 +281,49 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   road. `totals.search` reports `area_floor_sheets · ceiling_tried ·
   ceiling_used · attempts · capped` (`-1` in `ceiling_tried` = the unbounded
   fallback; `0` is a real ceiling meaning "buy nothing"). `--no-minimize-sheets`
-  restores the old loop exactly. **Measured caveat:** on rectangle-heavy jobs
-  spyrrow already packs each sheet to the area floor, so the ceiling ladder
-  usually *proves* the count rather than lowering it — the wins that showed up
-  in measurement are the free-area top-up and the rack decision below.
-- **Relleno del área libre (E23)**: spyrrow 0.9 exposes only
-  `StripPackingInstance.solve` — no bin packing, no fixed container, no way to
-  hand it a partially-occupied sheet — so denying a job a sheet does not make it
-  pack denser, it just makes it fail. The mechanism is ours: after each solve,
-  `nester/sheet/holes.py` fills `sheet usable rect − union(placed ⊕ gap)` with
-  still-unplaced parts, the same bounded shapely search E15 uses on holes.
-  Parts landing there are **ordinary parts** — no `in_hole_of`, not counted in
-  `parts_in_holes`; only the hole container flags a part. It only APPENDS, so it
-  cannot make a sheet worse. `--min-hole-side MM` (30) is the shortest side a
-  void needs before either container will look at it: a bolt hole is not usable
-  surface, and sweeping it costs real time.
+  restores the greedy loop **and** unconditional rack spending.
+
+  > **What the ceiling ladder does NOT do — read this before optimizing it.**
+  > It never lowered the sheet count. Across ~20 constructions (portrait
+  > sheets, L-shapes, free/ortho rotation, hole jobs, 1s and 4s budgets, three
+  > seeds each) there was **not one case** where the ladder beat the greedy
+  > walk on sheets bought: spyrrow already packs each sheet to the area floor,
+  > so greedy is already optimal on count for these jobs. Its two real jobs are
+  > (a) **proving** the count is at the floor — `ceiling_used ==
+  > area_floor_sheets` means no packing can do better, which the plan is
+  > entitled to say — and (b) making the **rack decline rule** possible at all,
+  > since deciding whether an offcut is worth opening requires solving the job
+  > both ways. Do not assume the ladder is what lowers the count; it is not,
+  > and a future engine with a real bin-packing solver is what would change
+  > that.
 - **Retazos de lámina (E16)**: the shop's sheet offcuts are extra stock. Pass
   them with `--remnant WxH[:LABEL]` (repeatable; label defaults to `R-000n`,
   must be unique) — or `extra_sheets: [{width_mm, height_mm, label}]` on
   `POST /v1/jobs`. A finite pool: each piece is usable **once**, and the solver
   spends the **smallest fitting** one first (big retazos stay free for big
-  parts — same rule as 1D) — but only **when spending it removes a purchase**.
-  That condition is E23's other half and it is load-bearing: opening an offcut
-  that does not lower `sheets_to_buy` costs the shop a physical piece AND adds
-  it to the denominator, which is exactly how the old engine turned a rack into
-  a 7-point yield drop. A retazo that would buy nothing back stays on the rack
-  and is reported in `remnants_unused` with `reason: "no_gain"` (the other
-  reasons are `no_fit`, `too_small_for_margin`, `job_ended`). The rack IS spent
-  unconditionally when it is load-bearing — a part that fits an offcut but no
-  new sheet — and on `--no-minimize-sheets`. Sheets in one job therefore need
+  parts) — but, unlike 1D, **only when spending it removes a purchase**.
+
+  > **The decline rule (E23) — this is the 2D doctrine, not an optimization.**
+  > A retazo is opened only if opening it lowers `sheets_to_buy`. One that would
+  > not stays on the rack and comes back in `remnants_unused` with
+  > `reason: "no_gain"`.
+  >
+  > Measured, seed 1, on the reproduction job (net yield): **no rack 60.1%** ·
+  > **rack, old always-spend rule 58.8%** · **rack, decline rule 63.1%**. The
+  > old rule left the shop *worse off than owning no offcuts at all*: it spent
+  > two physical pieces, bought the same three sheets, and put 1.44 m² of
+  > already-paid-for material into the denominator. That is not a metric
+  > artefact — same purchase, and two offcuts gone. Gross fell 53.7% → 46.3%.
+  >
+  > Two exceptions, both deliberate: the rack is spent unconditionally when it
+  > is **load-bearing** (a part fits an offcut but no new sheet — then "without
+  > the rack" is not a job at all), and on **`--no-minimize-sheets`**, which
+  > restores the pre-search engine including unconditional spending.
+  >
+  > `remnants_unused[].reason` is one of `no_gain` · `no_fit` (nothing left
+  > fitted it) · `too_small_for_margin` · `job_ended`.
+
+  Sheets in one job therefore need
   not be the same size: every `SheetLayout` carries its own `spec` + `source`,
   and area/weight totals SUM the layouts instead of multiplying a count. The
   plan reports `new_sheets_needed` (what to BUY) separately from total sheets,
@@ -344,7 +379,7 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   --sheet 2440x1220 --material acero --thickness 2 \
   --margin 8 --gap 3 --rotate free --time 4 --kerf 0.2 \
   --remnant 1220x600:R-0007 --nest-in-holes --min-remnant 200 \
-  --min-hole-side 30 --max-new-sheets 40 --search-budget 0 \
+  --min-hole-side 30 --max-new-sheets 40 --search-budget 0 --fill-free-area \
   --out output --name <job> --lang es
 ```
 
@@ -365,10 +400,16 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
 Remaining limits: one material/thickness per job; nesting is stochastic within
 `--time` (yield varies with the time budget even at a fixed `--seed`, because
 the budget is wall-clock — try a couple of seeds for production); hole nesting
-and the free-area top-up are both bounded first-fit searches, not optima; and
-the sheet search costs **2–4 full re-solves** (measured mean 2.0, ~1.7–2.4x the
-greedy wall clock) — real money on a 2-worker Render box, which is what
-`--search-budget` / `sheet_search_budget_s` exist to cap.
+and the free-area top-up are both bounded first-fit searches, not optima.
+
+Cost, measured on the reproduction job (2 workers on Render, so this is real
+money): the **top-up is nearly free — 1.10x** and it is where the yield comes
+from. The **sheet search** costs ~**1.09x with no rack** (one attempt: it
+confirms the floor and stops) and ~**1.5x with a rack** (two attempts: it has
+to solve the job with and without the offcuts to decide). Worst case seen was
+3 attempts / 2.5x on rack + holes. `--search-budget` / `sheet_search_budget_s`
+caps the whole search in wall clock; `--no-minimize-sheets` removes it entirely
+while `--fill-free-area` keeps the cheap win.
 
 ## File map
 
@@ -452,7 +493,8 @@ The 2D engine options ride the same body, all optional: `extra_sheets:
 [{width_mm, height_mm, label}]` (retazos, ≤200, unique labels
 case-insensitively, 422 otherwise), `nest_in_holes` (bool), `min_remnant_mm`
 (≥0), `density_kg_m3` (>0; overrides what `material` resolves to), and the E23
-search knobs — **`minimize_sheets` (bool, default TRUE)**, `max_new_sheets`
+knobs — **`fill_free_area` (bool, default TRUE; independent of the search)**,
+**`minimize_sheets` (bool, default TRUE)**, `max_new_sheets`
 (1–200, default 40), `sheet_search_budget_s` (0–1800, 0 = unbounded),
 `min_hole_side_mm` (≥0, default 30) and `kerf_mm` (≥0, **reported only**,
 surfacing as `result.params.kerf_mm` — the engine never applies kerf
