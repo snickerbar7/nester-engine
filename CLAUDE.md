@@ -80,11 +80,28 @@ IGES files ──▶ extract cut length ──▶ group by profile ──▶ pac
   `new_bars_needed` (what to BUY) separately from total bars, names every
   retazo it consumed, and draws each bar at its own length. A retazo for a
   profile that isn't in the job is a warning, never an error.
-  **1D spends the rack UNCONDITIONALLY, and that is correct here** — do not
-  "fix" it to match 2D. FFD on a bar is tight enough that a consumed retazo
-  really does take parts off a new bar; measured on a deliberately adversarial
-  job, spending retazos never left `new_bars_needed` unchanged (see the E23
-  note in the 2D section for the 2D pathology and why it does not arise here).
+  **1D spends the rack UNCONDITIONALLY — and unlike 2D, this is a KNOWN DEFECT,
+  not a deliberate rule.**
+
+  > **Measured, not suspected.** `_open_bar` (`nester/tube/packing.py`) takes
+  > the smallest fitting remnant whenever a part needs a new bar, without ever
+  > asking whether that removes a tramo from the purchase. On this file's own
+  > Pantallas_LED demo BOM (kerf 0.2, back-trim 300), sweeping one retazo from
+  > 400 to 5000 mm: **18 of 24 sizes are spent for nothing** — `new_bars_needed`
+  > stays 5 and reported yield falls by up to **11.3 points** — 3 sizes remove a
+  > tramo, 3 are never opened. The penalty grows monotonically with retazo size
+  > right up to the point where the piece is finally big enough to save a bar,
+  > so the bigger the offcut a shop offers, the harder the plan punishes it.
+  >
+  > It is the same pathology E23 fixed in 2D, and the 2D decline rule is the
+  > shape of the fix. **Deliberately NOT fixed in the E23 round** — the tube
+  > solver, its frozen `/nest` contract and Harriet all sit behind it, so it is
+  > its own round with its own gates.
+  >
+  > 1D also has no net/gross split at all: the plan's `APROV.` is
+  > `parts ÷ (new_len + rem_len)`, with retazo length in the denominator and no
+  > `devuelto` discount — the design's `aprovNeto = piezasLen ÷ (comprado −
+  > devuelto)` is unimplemented here, and the plan's own footnote says so.
 - **Allowances**: `--kerf` per cut, `--front-trim` (clamp dead zone),
   `--back-trim` (far-end remnant). Usable = bar length − front − back (for a
   retazo too). Each part reserves `length + kerf`.
