@@ -8,9 +8,20 @@ are consistent.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 NEW_BAR = "nuevo"   # BarLayout.source for a full purchased tramo
+
+# Why a remnant (retazo) offered to the job was never opened. Reported per
+# piece, mirroring the 2D reasons in ``nester.sheet.model``, so the shop can
+# tell "nothing fitted it" from "spending it would have bought nothing".
+REMNANT_NO_FIT = "no_fit"                     # nothing in the job fits it
+REMNANT_TOO_SMALL = "too_small_for_trims"     # shorter than front+back trim
+REMNANT_JOB_ENDED = "job_ended"               # the parts ran out first
+# Declined on purpose: opening it would not have removed a tramo from the
+# purchase order, so spending it would have cost a physical offcut for nothing.
+# See ``nester.tube.packing.pack_profile``.
+REMNANT_NO_GAIN = "no_gain"
 
 
 @dataclass(frozen=True)
@@ -50,9 +61,16 @@ class StockSpec:
     """Stock definition + the workshop cutting allowances for one profile.
 
     ``stock_length`` is the full purchased bar (tramo) — an unlimited supply.
-    ``extra_stock`` is the finite pool of remnants to consume BEFORE buying a
-    new tramo; it is stored as a tuple so the spec stays hashable, but any
-    iterable of :class:`ExtraStock` may be passed in.
+    ``extra_stock`` is the finite pool of remnants the solver may consume
+    instead of buying a new tramo; it is stored as a tuple so the spec stays
+    hashable, but any iterable of :class:`ExtraStock` may be passed in.
+
+    ``min_remnant`` is the shortest drop worth putting back on the rack (mm).
+    It is a *reporting* threshold, not a cutting allowance: at or above it a
+    bar's drop is a recoverable SOBRANTE, below it MERMA. It is deliberately
+    NOT ``back_trim`` — the back trim is the chuck dead zone the machine cannot
+    reach, which is a different thing. 0 (the default) means the tool does not
+    classify the drop at all, and the net and gross yields coincide.
     """
 
     profile: str
@@ -61,6 +79,7 @@ class StockSpec:
     front_trim: float = 0.0  # dead zone at clamp/loading end (unusable)
     back_trim: float = 0.0   # dead zone / required remnant at the far end
     extra_stock: Tuple[ExtraStock, ...] = ()   # remnants on the rack
+    min_remnant: float = 0.0   # shortest drop worth keeping (0 = don't classify)
 
     def __post_init__(self) -> None:
         if not isinstance(self.extra_stock, tuple):
@@ -134,6 +153,22 @@ class BarLayout:
         return self.usable_length - self.consumed_length
 
     @property
+    def leftover(self) -> float:
+        """The part of the drop worth putting back on the rack (SOBRANTE, mm).
+
+        0 when the job set no ``min_remnant`` or the drop is under it — that
+        piece is MERMA, and the shop is not going to store it.
+        """
+        drop = self.remnant
+        m = self.spec.min_remnant
+        return drop if (m > 0 and drop + 1e-9 >= m) else 0.0
+
+    @property
+    def waste(self) -> float:
+        """The part of the drop nobody keeps (MERMA, mm)."""
+        return max(self.remnant - self.leftover, 0.0)
+
+    @property
     def utilization(self) -> float:
         """Fraction of *this* bar turned into parts."""
         return self.used_length / self.stock_length if self.stock_length else 0.0
@@ -147,6 +182,13 @@ class ProfileResult:
     spec: StockSpec
     bars: List[BarLayout] = field(default_factory=list)
     unplaceable: List[Part] = field(default_factory=list)  # parts longer than usable length
+    # Remnants offered but never opened — nothing fitted them, the job ended
+    # first, or opening them would not have removed a tramo (``no_gain``).
+    # Reported so the rack is never silently ignored and the piece stays
+    # available for the next job.
+    remnants_unused: List[ExtraStock] = field(default_factory=list)
+    # {label: one of REMNANT_*} — WHY each unused remnant was never opened.
+    remnant_reasons: Dict[str, str] = field(default_factory=dict)
 
     @property
     def bar_count(self) -> int:
@@ -173,7 +215,68 @@ class ProfileResult:
         return sum(b.stock_length for b in self.bars)
 
     @property
+    def new_stock_length(self) -> float:
+        """Sum of the tramos actually BOUGHT — what procurement pays for."""
+        return sum(b.stock_length for b in self.bars if not b.is_remnant)
+
+    @property
     def yield_pct(self) -> float:
         if not self.total_stock_length:
             return 0.0
         return 100.0 * self.total_part_length / self.total_stock_length
+
+    # ----------------------------------------------------------------- #
+    # Net vs gross
+    # ----------------------------------------------------------------- #
+    # ``yield_pct`` above is the GROSS number and keeps its name, meaning and
+    # value forever — Harriet's frozen /nest reads it. The net number below
+    # discounts the drop that goes BACK on the rack, exactly as the 2D tool
+    # discounts a reclaimable offcut. Without it, a shop that feeds the job its
+    # own retazos ADDS to the denominator and watches the headline yield fall:
+    # the product punishing a shop for taking its own advice.
+
+    @property
+    def total_drop_length(self) -> float:
+        """Everything left over on the usable regions (SOBRANTE + MERMA, mm)."""
+        return sum(b.remnant for b in self.bars)
+
+    @property
+    def reclaimable_length(self) -> float:
+        """Drop that goes back on the rack as a usable SOBRANTE (mm)."""
+        return sum(b.leftover for b in self.bars)
+
+    @property
+    def reclaimable(self) -> List[Tuple[int, float]]:
+        """(bar number, length) for every bar leaving a keepable sobrante."""
+        return [(b.index + 1, b.leftover) for b in self.bars if b.leftover > 0]
+
+    @property
+    def consumed_length(self) -> float:
+        """Stock opened MINUS what goes back to the rack (mm).
+
+        (Not to be confused with :attr:`BarLayout.consumed_length`, which is one
+        bar's kerf-inclusive fill.)
+        """
+        return max(self.total_stock_length - self.reclaimable_length, 0.0)
+
+    @property
+    def waste_length(self) -> float:
+        """Material that neither leaves as a part nor returns to the rack (mm).
+
+        Kerf + dead zones + the drop too short to keep.
+        """
+        return max(self.total_stock_length - self.total_part_length
+                   - self.reclaimable_length, 0.0)
+
+    @property
+    def net_yield_pct(self) -> float:
+        """The honest headline: parts over the material actually consumed."""
+        consumed = self.consumed_length
+        if not consumed:
+            return 0.0
+        return 100.0 * self.total_part_length / consumed
+
+    @property
+    def gross_yield_pct(self) -> float:
+        """Parts over every mm opened. Same value as ``yield_pct``."""
+        return self.yield_pct

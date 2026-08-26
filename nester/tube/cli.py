@@ -35,6 +35,14 @@ from .report import write_reports
 
 _IGES_EXTS = (".igs", ".iges")
 
+# Why a remnant offered to the job was never opened, in the shop's words.
+_REASON_ES = {
+    "no_gain": "abrirlo no habría quitado ningún tramo de la compra",
+    "no_fit": "ninguna pieza del trabajo cabe en él",
+    "too_small_for_trims": "más corto que las zonas muertas",
+    "job_ended": "el trabajo terminó antes",
+}
+
 
 def main(argv: List[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
@@ -59,10 +67,18 @@ def main(argv: List[str] | None = None) -> int:
 
     specs = _build_specs(parts, args)
     try:
-        results = pack_all(parts, specs)
+        results = pack_all(parts, specs, minimize_bars=args.minimize_bars)
     except KeyError as e:
         print(str(e), file=sys.stderr)
         return 1
+
+    # A remnant the job did not need is information, never an error — same rule
+    # the flat-sheet tool applies to retazos de lámina.
+    for r in results:
+        for e in r.remnants_unused:
+            why = _REASON_ES.get(r.remnant_reasons.get(e.label, ""), "no se usó")
+            print(f"  ~ sobrante {e.label} ({e.length:g} mm, {r.profile}): "
+                  f"{why} — sigue en el rack", file=sys.stderr)
 
     if args.json:
         print(json.dumps(_as_dict(results), indent=2))
@@ -77,6 +93,8 @@ def main(argv: List[str] | None = None) -> int:
             "kerf": args.kerf,
             "front_trim": args.front_trim,
             "back_trim": args.back_trim,
+            "min_remnant": args.min_remnant,
+            "minimize_bars": bool(args.minimize_bars),
             "lang": args.lang,
         }
         # Attempt the IGES nest-layout write BEFORE the JSON so a failure (E4)
@@ -162,6 +180,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--remnant", action="append", default=[], metavar="PROFILE=MM[:LABEL]",
                    help="a leftover piece (retazo) available as extra stock; used "
                         "before buying a new bar (repeatable). LABEL defaults to R-000n.")
+    p.add_argument("--min-remnant", type=float, default=200.0, metavar="MM",
+                   help="shortest drop worth keeping: at or above it a bar's "
+                        "leftover is a recoverable SOBRANTE (and is discounted "
+                        "from the net yield), below it MERMA. Not the same thing "
+                        "as --back-trim, which is the chuck dead zone. "
+                        "0 turns the split off (default 200)")
+    p.add_argument("--minimize-bars", dest="minimize_bars",
+                   action=argparse.BooleanOptionalAction, default=True,
+                   help="open a remnant only when opening it removes a tramo "
+                        "from the purchase order (default on); anything that "
+                        "would buy nothing stays on the rack, reported with "
+                        "reason 'no_gain'. --no-minimize-bars restores the old "
+                        "unconditional spending.")
     p.add_argument("--kerf", type=float, default=0.0, help="saw kerf per cut (mm)")
     p.add_argument("--front-trim", type=float, default=0.0, help="clamp/loading dead zone (mm)")
     p.add_argument("--back-trim", type=float, default=0.0, help="far-end dead zone / min remnant (mm)")
@@ -273,6 +304,7 @@ def _build_specs(parts: List[Part], args: argparse.Namespace) -> Dict[str, Stock
             front_trim=args.front_trim,
             back_trim=args.back_trim,
             extra_stock=tuple(extra.get(profile, ())),
+            min_remnant=getattr(args, "min_remnant", 0.0) or 0.0,
         )
     for profile in extra:
         if profile not in specs:
@@ -320,9 +352,11 @@ def _format_report(results: List[ProfileResult], errors_count: int) -> str:
         total_bars += r.bar_count
         lines.append("")
         extra = f"  (+ {len(r.remnants_used)} remnant(s))" if r.remnants_used else ""
+        yields = (f"yield {r.yield_pct:.1f}%" if not r.reclaimable_length
+                  else f"net {r.net_yield_pct:.1f}% / gross {r.yield_pct:.1f}%")
         lines.append(f"● Profile {r.profile}  —  {r.new_bars_needed} new bar(s) "
                      f"@ {r.spec.stock_length:g}mm{extra}"
-                     f"  ·  yield {r.yield_pct:.1f}%")
+                     f"  ·  {yields}")
         lines.append(f"  kerf {r.spec.kerf:g}  front-trim {r.spec.front_trim:g}  "
                      f"back-trim {r.spec.back_trim:g}  usable {r.spec.usable_length:g}mm")
         n_new = 0
@@ -352,14 +386,25 @@ def _as_dict(results: List[ProfileResult]) -> dict:
                 "bars": r.bar_count,
                 "new_bars_needed": r.new_bars_needed,
                 "remnants_used": r.remnants_used,
+                "remnants_unused": [
+                    {"label": e.label, "length": e.length,
+                     "reason": r.remnant_reasons.get(e.label)}
+                    for e in r.remnants_unused
+                ],
                 "stock_length": r.spec.stock_length,
                 "yield_pct": round(r.yield_pct, 2),
+                "net_yield_pct": round(r.net_yield_pct, 2),
+                "gross_yield_pct": round(r.gross_yield_pct, 2),
+                "reclaimable": round(r.reclaimable_length, 3),
+                "waste": round(r.waste_length, 3),
                 "layout": [
                     {
                         "bar": b.index + 1,
                         "stock_length": b.stock_length,
                         "source": b.source,
                         "remnant": round(b.remnant, 3),
+                        "leftover": round(b.leftover, 3),
+                        "waste": round(b.waste, 3),
                         "cuts": [
                             {"part": p.part.name, "length": p.part.length,
                              "start": round(p.start, 3), "end": round(p.end, 3)}

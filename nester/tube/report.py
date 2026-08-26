@@ -106,13 +106,15 @@ _LANG = {
         "buy_units": "{n} tramos",
         "buy_unit1": "1 tramo",
         "buy_note": "sobrante {scrap}",
-        "buy_remnants": "Retazos usados",
-        "material_sub": "kerf {kerf} · zona muerta {ft} / {bt}",
-        "material_sub_nozm": "kerf {kerf} · sin zona muerta",
+        "buy_remnants": "Sobrantes usados",
+        "material_sub": "ranura de corte (kerf) {kerf} · zona muerta {ft} / {bt}",
+        "material_sub_nozm": "ranura de corte (kerf) {kerf} · sin zona muerta",
         "howitwent": "CÓMO QUEDÓ EL MATERIAL",
         "more_bars": "+ {n} tramo(s) más · ver las hojas de dibujo",
         "lg_dead": "zona muerta {v}",
         "lg_drop": "sobrante",
+        "lg_waste": "merma",
+        "lg_drop_min": "sobrante ≥ {v} · abajo, merma",
         "warn": "ANTES DE CORTAR",
         "warn_sub": "revísalo antes de encender la sierra",
         "warn_toolong": "Piezas más largas que el tramo",
@@ -122,16 +124,22 @@ _LANG = {
         "more_warn": "+ {n} aviso(s) más · ver el JSON del trabajo",
         "warn_generic": "Aviso del trabajo",
         "accounts": "CUENTAS DEL MATERIAL",
-        "a_bought": "COMPRADO", "a_remnant": "DE RETAZO", "a_parts": "EN PIEZAS",
-        "a_kerf": "KERF", "a_dead": "ZONA MUERTA", "a_drop": "SOBRANTE",
+        "a_bought": "COMPRADO", "a_remnant": "DE SOBRANTE", "a_parts": "EN PIEZAS",
+        "a_kerf": "RANURA DE CORTE (KERF)", "a_kerf_short": "RANURA (KERF)",
+        "a_dead": "ZONA MUERTA", "a_drop": "SOBRANTE", "a_waste": "MERMA",
         "a_yield": "APROV.",
-        "formula": "aprov. = {parts} ÷ {stock} = {pct} · el sobrante de cada tramo "
-                   "queda en el rack, no está descontado",
+        "formula": "aprov. = {parts} ÷ {stock} = {pct}",
+        "formula_norecl": " · lo que sobra de cada tramo queda en el rack, "
+                          "no está descontado",
+        "formula_recl": " · de eso, {recl} vuelven al rack como sobrante "
+                        "(aprov. neto {net})",
         "params": "PARÁMETROS DEL ANIDADO",
         "p_profile": "Perfil / material", "p_stock": "Tramo comercial",
-        "p_kerf": "Kerf", "p_front": "Zona muerta de entrada",
+        "p_kerf": "Ranura de corte (kerf)", "p_front": "Zona muerta de entrada",
         "p_back": "Zona muerta de salida", "p_usable": "Útil por tramo",
-        "p_remnants": "Retazos ofrecidos", "p_solver": "Algoritmo",
+        "p_minrem": "Sobrante mínimo útil",
+        "p_remnants": "Sobrantes ofrecidos", "p_remnants_v": "{used} de {n} usados",
+        "p_solver": "Algoritmo",
         "p_solver_v": "First Fit Decreasing", "p_pieces": "Piezas a cortar",
         "p_linear": "Longitud lineal",
         "files": "ARCHIVOS DE ORIGEN",
@@ -143,8 +151,8 @@ _LANG = {
         "draw": "Dibujo de tramos",
         "draw_sub": "{profile} · tramo {stock} · escala 1:{scale} · cortar de izquierda a derecha",
         "draw_range": "tramos {a} – {b} de {n}",
-        "bar_meta": "{n} cortes · aprov. {pct} · sobrante {drop}",
-        "bar_meta1": "1 corte · aprov. {pct} · sobrante {drop}",
+        "bar_meta": "{n} cortes · aprov. {pct} · {kind} {drop}",
+        "bar_meta1": "1 corte · aprov. {pct} · {kind} {drop}",
         "seq": "SECUENCIA",
         "dead_short": "ZM",
         # cut list
@@ -161,11 +169,12 @@ _LANG = {
         "labels_sub": "{n} etiquetas · recorta por la línea punteada y pégalas al salir de la sierra",
         # bar labels / footer
         "bar_new": "TRAMO {i}",
-        "bar_remnant": "RETAZO {label} ({stock})",
+        "bar_remnant": "SOBRANTE {label} ({stock})",
         "meta_date": "FECHA", "meta_profiles": "PERFILES",
         "meta_bars": "TRAMOS A COMPRAR", "meta_pieces": "PIEZAS",
         "sheet": "hoja {p} / {n}",
-        "foot_note": "medidas en mm · acumulado desde el tope, incluye kerf {kerf}",
+        "foot_note": "medidas en mm · acumulado desde el tope, incluye "
+                     "la ranura de corte (kerf) {kerf}",
         "foot_cover": "hecho con {brand} · nester.harriet.com.mx · {date}",
     },
     "en": {
@@ -186,6 +195,8 @@ _LANG = {
         "more_bars": "+ {n} more bar(s) · see the drawing sheets",
         "lg_dead": "dead zone {v}",
         "lg_drop": "drop",
+        "lg_waste": "waste",
+        "lg_drop_min": "remnant ≥ {v} · below that, waste",
         "warn": "BEFORE YOU CUT",
         "warn_sub": "check this before starting the saw",
         "warn_toolong": "Parts longer than the stock bar",
@@ -196,15 +207,21 @@ _LANG = {
         "warn_generic": "Job warning",
         "accounts": "MATERIAL ACCOUNTS",
         "a_bought": "BOUGHT", "a_remnant": "FROM REMNANT", "a_parts": "IN PARTS",
-        "a_kerf": "KERF", "a_dead": "DEAD ZONE", "a_drop": "DROP",
+        "a_kerf": "KERF", "a_kerf_short": "KERF",
+        "a_dead": "DEAD ZONE", "a_drop": "REMNANT", "a_waste": "WASTE",
         "a_yield": "YIELD",
-        "formula": "yield = {parts} ÷ {stock} = {pct} · each bar's drop stays on "
-                   "the rack, it is not discounted here",
+        "formula": "yield = {parts} ÷ {stock} = {pct}",
+        "formula_norecl": " · each bar's drop stays on the rack, it is not "
+                          "discounted here",
+        "formula_recl": " · {recl} of that goes back on the rack as remnant "
+                        "stock (net yield {net})",
         "params": "NESTING PARAMETERS",
         "p_profile": "Profile / material", "p_stock": "Stock bar",
         "p_kerf": "Kerf", "p_front": "Front dead zone",
         "p_back": "Back dead zone", "p_usable": "Usable per bar",
-        "p_remnants": "Remnants offered", "p_solver": "Solver",
+        "p_minrem": "Min. remnant kept",
+        "p_remnants": "Remnants offered", "p_remnants_v": "{used} of {n} used",
+        "p_solver": "Solver",
         "p_solver_v": "First Fit Decreasing", "p_pieces": "Pieces to cut",
         "p_linear": "Linear length",
         "files": "SOURCE FILES",
@@ -215,8 +232,8 @@ _LANG = {
         "draw": "Bar drawings",
         "draw_sub": "{profile} · stock {stock} · scale 1:{scale} · cut left to right",
         "draw_range": "bars {a} – {b} of {n}",
-        "bar_meta": "{n} cuts · yield {pct} · drop {drop}",
-        "bar_meta1": "1 cut · yield {pct} · drop {drop}",
+        "bar_meta": "{n} cuts · yield {pct} · {kind} {drop}",
+        "bar_meta1": "1 cut · yield {pct} · {kind} {drop}",
         "seq": "SEQUENCE",
         "dead_short": "DZ",
         "cutlist": "Cut list",
@@ -339,6 +356,17 @@ def _bar_label(L: Dict[str, str], bar: BarLayout, nums: Dict[int, int]) -> str:
     return L["bar_new"].format(i=nums[bar.index])
 
 
+def _drop_word(L: Dict[str, str], bar: BarLayout) -> str:
+    """What to call this bar's leftover: SOBRANTE (worth keeping) or MERMA.
+
+    With no ``min_remnant`` the job never made the distinction, so the drop is
+    reported undifferentiated — as 'sobrante' — rather than called waste.
+    """
+    if bar.spec.min_remnant <= 0:
+        return L["lg_drop"]
+    return L["lg_drop"] if bar.leftover > 0 else L["lg_waste"]
+
+
 def _remnant_items(results: List[ProfileResult]) -> List[str]:
     """'R-0001 (2140 mm)' for every remnant consumed, in plan order."""
     return [f"{b.source} ({_mm(b.stock_length)})"
@@ -371,12 +399,18 @@ def _as_dict(results: List[ProfileResult], job_name: str, meta: Dict, warnings: 
     return {
         "job": job_name,
         "generated": meta.get("generated"),
-        "params": {k: meta[k] for k in ("kerf", "front_trim", "back_trim") if k in meta},
+        "params": {k: meta[k] for k in
+                   ("kerf", "front_trim", "back_trim", "min_remnant", "minimize_bars")
+                   if k in meta},
         "warnings": list(warnings or []),
         "totals": {
             "profiles": len(results),
             "stock_bars": sum(r.bar_count for r in results),
             "new_bars_needed": sum(r.new_bars_needed for r in results),
+            # Net vs gross, job-wide. ``yield_pct`` per profile keeps its
+            # meaning; these discount the drop that goes back on the rack.
+            "reclaimable": round(sum(r.reclaimable_length for r in results), 3),
+            "waste": round(sum(r.waste_length for r in results), 3),
         },
         "profiles": [
             {
@@ -384,15 +418,29 @@ def _as_dict(results: List[ProfileResult], job_name: str, meta: Dict, warnings: 
                 "bars": r.bar_count,
                 "new_bars_needed": r.new_bars_needed,
                 "remnants_used": r.remnants_used,
+                # Offered but never opened, and WHY (no_gain / no_fit /
+                # too_small_for_trims / job_ended) — it stays on the rack.
+                "remnants_unused": [
+                    {"label": e.label, "length": e.length,
+                     "reason": r.remnant_reasons.get(e.label)}
+                    for e in r.remnants_unused
+                ],
                 "stock_length": r.spec.stock_length,
                 "usable_length": r.spec.usable_length,
+                "min_remnant": r.spec.min_remnant,
                 "yield_pct": round(r.yield_pct, 2),
+                "net_yield_pct": round(r.net_yield_pct, 2),
+                "gross_yield_pct": round(r.gross_yield_pct, 2),
+                "reclaimable": round(r.reclaimable_length, 3),
+                "waste": round(r.waste_length, 3),
                 "layout": [
                     {
                         "bar": b.index + 1,
                         "stock_length": b.stock_length,
                         "source": b.source,
                         "remnant": round(b.remnant, 3),
+                        "leftover": round(b.leftover, 3),
+                        "waste": round(b.waste, 3),
                         "cuts": [
                             {"part": p.part.name, "length": p.part.length,
                              "start": round(p.start, 3), "end": round(p.end, 3)}
@@ -840,7 +888,11 @@ def _buy_table(c, L, results, bars, x, w, y) -> float:
     ty = ry - px(14)
     total_new = sum(r.new_bars_needed for r in results)
     total_pcs = sum(len(b.placements) for r in results for b in r.bars)
-    total_scrap = sum(b.remnant for r in results for b in r.bars)
+    # With a --min-remnant the word 'sobrante' means the piece worth keeping,
+    # so the totals row reports that; without one it stays the whole drop.
+    split = any(r.spec.min_remnant > 0 for r in results)
+    total_scrap = sum((b.leftover if split else b.remnant)
+                      for r in results for b in r.bars)
     _t(c, x + pad, ty, L["buy_total"], SANS_B, px(11), INK)
     _t(c, c_stk, ty, "—", MONO, px(11), SOFT, align="r")
     _t(c, c_cnt, ty, L["buy_unit1"] if total_new == 1 else L["buy_units"].format(n=total_new),
@@ -881,7 +933,10 @@ def _how_it_went(c, L, results, pieces, bars, meta, x, w, y, floor) -> float:
     bt = meta.get("back_trim", 0) or 0
     if ft or bt:
         keys.append(L["lg_dead"].format(v=_mmn(ft + bt)))
-    keys.append(L["lg_drop"])
+    min_rem = max((r.spec.min_remnant for r in results), default=0.0)
+    drop_key = (L["lg_drop_min"].format(v=_mmn(min_rem)) if min_rem > 0
+                else L["lg_drop"])
+    keys.append(drop_key)
     lines, run = 1, 0.0
     for k in keys:
         kw = px(14) + _tw(c, k, MONO, fs) + px(14)
@@ -928,7 +983,8 @@ def _how_it_went(c, L, results, pieces, bars, meta, x, w, y, floor) -> float:
         _t(c, bar_x + bar_w + px(9) + pct_w, ty, f"{pct:.1f} %",
            MONO_B, px(10), INK, align="r")
         _t(c, x + w, ty,
-           f"{L['lg_drop']} {_num(b.bar.remnant, 1)} mm", MONO, px(9.5), SOFT, align="r")
+           f"{_drop_word(L, b.bar)} {_num(b.bar.remnant, 1)} mm",
+           MONO, px(9.5), SOFT, align="r")
         y -= row_h
 
     if hidden > 0:
@@ -956,7 +1012,7 @@ def _how_it_went(c, L, results, pieces, bars, meta, x, w, y, floor) -> float:
             L["lg_dead"].format(v=_mmn(ft + bt)))
     key(lambda sx, sy: _rect(c, sx, sy - px(1), px(9), px(9), fill=DROP_BG,
                              stroke=SOFT, lw=px(1), dash=(px(1.6), px(1.6))),
-        L["lg_drop"])
+        drop_key)
     return ly - px(10)
 
 
@@ -1016,19 +1072,49 @@ def _accounts(c, L, results, bars, meta, x, w, y):
     kerf_total = sum(len(b.bar.placements) * b.result.spec.kerf for b in bars)
     dead = sum(b.result.spec.front_trim + b.result.spec.back_trim for b in bars)
     drop = sum(b.bar.remnant for b in bars)
+    # SOBRANTE is the drop worth putting back on the rack, MERMA the rest. With
+    # no --min-remnant nothing is classified: the whole drop reads as sobrante,
+    # exactly as it did before the split existed.
+    split = any(r.spec.min_remnant > 0 for r in results)
+    recl = sum(b.bar.leftover for b in bars)
+    merma = max(drop - recl, 0.0)
     stock = new_len + rem_len
     yld = 100.0 * parts / stock if stock else 0.0
+    net = 100.0 * parts / (stock - recl) if (stock - recl) > 0 else yld
 
-    cells = [(L["a_bought"], f"{_num(new_len, 0)} mm", False)]
-    if rem_len:
-        cells.append((L["a_remnant"], f"{_num(rem_len, 0)} mm", False))
-    cells.append((L["a_parts"], f"{_num(parts, 1)} mm", False))
-    if kerf_total:
-        cells.append((L["a_kerf"], f"{_num(kerf_total, 1)} mm", False))
-    if dead:
-        cells.append((L["a_dead"], f"{_num(dead, 0)} mm", False))
-    cells.append((L["a_drop"], f"{_num(drop, 1)} mm", False))
-    cells.append((L["a_yield"], f"{yld:.1f} %", True))
+    def build(kerf_label: str):
+        cells = [(L["a_bought"], f"{_num(new_len, 0)} mm", False)]
+        if rem_len:
+            cells.append((L["a_remnant"], f"{_num(rem_len, 0)} mm", False))
+        cells.append((L["a_parts"], f"{_num(parts, 1)} mm", False))
+        if kerf_total:
+            cells.append((kerf_label, f"{_num(kerf_total, 1)} mm", False))
+        if dead:
+            cells.append((L["a_dead"], f"{_num(dead, 0)} mm", False))
+        cells.append((L["a_drop"], f"{_num(recl if split else drop, 1)} mm", False))
+        if split:
+            cells.append((L["a_waste"], f"{_num(merma, 1)} mm", False))
+        cells.append((L["a_yield"], f"{yld:.1f} %", True))
+        return cells
+
+    def width(cells, spacing) -> float:
+        total = 0.0
+        for lb, v, big in cells:
+            vs = px(16) if big else px(12.5)
+            total += max(_tw(c, lb, MONO_B, px(8), px(8) * 0.1),
+                         _tw(c, v, MONO_B, vs)) + spacing
+        return total
+
+    # "ranura de corte (kerf)" is the word on the machine and in the CAM, so the
+    # parenthetical is NEVER dropped — the band gives way instead: long label,
+    # then the short form, then tighter cell spacing. Bare "KERF" or bare
+    # "RANURA" is not one of the outcomes.
+    for label, spacing in ((L["a_kerf"], px(14)),
+                           (L["a_kerf_short"], px(14)),
+                           (L["a_kerf_short"], px(9))):
+        cells = build(label)
+        if width(cells, spacing) <= w:
+            break
 
     cx = x
     for i, (lb, v, big) in enumerate(cells):
@@ -1036,14 +1122,16 @@ def _accounts(c, L, results, bars, meta, x, w, y):
         cwid = max(_tw(c, lb, MONO_B, px(8), px(8) * 0.1), _tw(c, v, MONO_B, vs))
         _t(c, cx, y + px(3), lb, MONO_B, px(8), FAINT, track=px(8) * 0.1)
         _t(c, cx, y - px(11), v, MONO_B, vs, INK)
-        cx += cwid + px(14)
+        cx += cwid + spacing
         if i < len(cells) - 1:
-            _line(c, cx - px(7), y - px(13), cx - px(7), y + px(6), HAIR)
+            _line(c, cx - spacing / 2, y - px(13), cx - spacing / 2, y + px(6), HAIR)
 
-    _t(c, x, y - px(23),
-       _ellipsize(c, L["formula"].format(parts=_num(parts, 1), stock=_num(stock, 0),
-                                         pct=f"{yld:.1f} %"), MONO, px(9), w),
-       MONO, px(9), FAINT)
+    formula = L["formula"].format(parts=_num(parts, 1), stock=_num(stock, 0),
+                                  pct=f"{yld:.1f} %")
+    formula += (L["formula_recl"].format(recl=f"{_num(recl, 0)} mm",
+                                         net=f"{net:.1f} %")
+                if recl else L["formula_norecl"])
+    _t(c, x, y - px(23), _ellipsize(c, formula, MONO, px(9), w), MONO, px(9), FAINT)
 
 
 def _right_column(c, L, results, pieces, bars, cuts, meta, x, w, y, floor):
@@ -1055,6 +1143,8 @@ def _right_column(c, L, results, pieces, bars, cuts, meta, x, w, y, floor):
     stocks = " · ".join(sorted({_mmn(r.spec.stock_length) for r in results}))
     usable = " · ".join(sorted({_mmn(r.spec.usable_length) for r in results}))
     n_rem = sum(len(r.spec.extra_stock) for r in results)
+    n_used = sum(len(r.remnants_used) for r in results)
+    min_rem = max((r.spec.min_remnant for r in results), default=0.0)
     rows = [
         (L["p_profile"], _ellipsize(c, profs, MONO_B, px(12), w * 0.62)),
         (L["p_stock"], stocks),
@@ -1063,8 +1153,13 @@ def _right_column(c, L, results, pieces, bars, cuts, meta, x, w, y, floor):
         (L["p_back"], _mmn(r0.spec.back_trim if r0 else 0)),
         (L["p_usable"], _ellipsize(c, usable, MONO_B, px(12), w * 0.62)),
     ]
+    if min_rem:
+        rows.append((L["p_minrem"], _mmn(min_rem)))
     if n_rem:
-        rows.append((L["p_remnants"], str(n_rem)))
+        # How many of the offered pieces the plan actually opened: one that
+        # would not have removed a tramo stays on the rack, and the shop needs
+        # to see that it was considered, not forgotten.
+        rows.append((L["p_remnants"], L["p_remnants_v"].format(used=n_used, n=n_rem)))
     rows += [
         (L["p_pieces"], str(len(cuts))),
         (L["p_linear"], _mmn(sum(p.piece.length for p in cuts))),
@@ -1218,6 +1313,7 @@ def _draw_bar_block(c, L, b: _Bar, longest, x, w, y, bar_h=px(72)) -> float:
     hx = x + _t(c, x, hy, b.label, MONO_B, px(13), INK, track=px(13) * 0.05) + px(11)
     key = "bar_meta1" if len(b.cuts) == 1 else "bar_meta"
     meta = L[key].format(n=len(b.cuts), pct=f"{pct:.1f} %",
+                         kind=_drop_word(L, b.bar),
                          drop=f"{_num(b.bar.remnant, 1)} mm")
     hx += _t(c, hx, hy, meta, MONO, px(11), SOFT) + px(11)
     counts = Counter(ct.piece.pid for ct in b.cuts)

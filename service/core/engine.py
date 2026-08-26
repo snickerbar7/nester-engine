@@ -201,11 +201,27 @@ def profile_result_to_dict(r: ProfileResult) -> Dict[str, Any]:
         "bars_needed": r.bar_count,          # TOTAL bars used (tramos + remnants)
         "new_bars_needed": r.new_bars_needed,  # full tramos to BUY
         "remnants_used": r.remnants_used,      # remnant labels, in bar order
+        # Offered but never opened, and why. A remnant that would not have
+        # removed a tramo is DECLINED ("no_gain") and stays on the rack.
+        "remnants_unused": [
+            {"label": e.label, "length_mm": round(e.length, 4),
+             "reason": r.remnant_reasons.get(e.label)}
+            for e in r.remnants_unused
+        ],
         "stock_length_mm": round(r.spec.stock_length, 4),
         "usable_length_mm": round(r.spec.usable_length, 4),
         "total_part_length_mm": round(r.total_part_length, 4),
         "total_drop_mm": round(total_drop, 4),
+        # GROSS — frozen name, meaning and value: Harriet's /nest reads it.
         "yield_pct": round(r.yield_pct, 2),
+        # Net/gross pair, additive. ``net`` discounts the drop long enough to go
+        # back on the rack (``min_remnant_mm``; 0 here unless the caller set it,
+        # in which case net == gross and reclaimable is 0).
+        "net_yield_pct": round(r.net_yield_pct, 2),
+        "gross_yield_pct": round(r.gross_yield_pct, 2),
+        "min_remnant_mm": round(r.spec.min_remnant, 4),
+        "reclaimable_mm": round(r.reclaimable_length, 4),
+        "waste_mm": round(r.waste_length, 4),
         "bars": [
             {
                 "bar_index": b.index + 1,  # 1-based: bar 1 is the first bar off the rack
@@ -213,6 +229,8 @@ def profile_result_to_dict(r: ProfileResult) -> Dict[str, Any]:
                 "source": b.source,        # "nuevo" for a tramo, else the remnant label
                 "pieces_mm": [round(p.part.length, 4) for p in b.placements],
                 "drop_mm": round(b.remnant, 4),
+                "leftover_mm": round(b.leftover, 4),   # of the drop, worth keeping
+                "waste_mm": round(b.waste, 4),
             }
             for b in r.bars
         ],

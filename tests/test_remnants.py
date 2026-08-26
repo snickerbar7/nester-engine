@@ -96,7 +96,7 @@ def test_remnant_shorter_than_the_trims_is_never_offered():
 
 
 def test_remnant_used_only_once():
-    spec = StockSpec(profile="p", stock_length=6000, extra_stock=rem((2000, "R-0001")))
+    spec = StockSpec(profile="p", stock_length=2000, extra_stock=rem((2000, "R-0001")))
     res = pack_profile(mk("p", [1900, 1900]), spec)
     assert res.remnants_used == ["R-0001"]
     assert res.new_bars_needed == 1
@@ -153,19 +153,19 @@ def test_kerf_and_trims_apply_to_a_remnant_bar():
 
 
 def test_remnant_capacity_is_its_own_length_not_the_tramo():
-    spec = StockSpec(profile="p", stock_length=6000, extra_stock=rem((2000, "R-0001")))
-    res = pack_profile(mk("p", [1500, 1500]), spec)
-    # 2 x 1500 fit a 6 m tramo but not the 2 m retazo
+    spec = StockSpec(profile="p", stock_length=3000, extra_stock=rem((2000, "R-0001")))
+    res = pack_profile(mk("p", [1500, 1500, 1500]), spec)
+    # 2 x 1500 fit a 3 m tramo but only ONE fits the 2 m retazo
     assert res.remnants_used == ["R-0001"]
-    assert res.new_bars_needed == 1
-    assert [len(b.placements) for b in res.bars] == [1, 1]
+    assert res.new_bars_needed == 1               # 2 tramos without the rack
+    assert [len(b.placements) for b in res.bars] == [1, 2]
 
 
 def test_yield_uses_the_actual_mixed_stock_lengths():
-    spec = StockSpec(profile="p", stock_length=6000, extra_stock=rem((2000, "R-0001")))
+    spec = StockSpec(profile="p", stock_length=2500, extra_stock=rem((2000, "R-0001")))
     res = pack_profile(mk("p", [2000, 1000]), spec)
-    assert res.total_stock_length == 8000         # 2000 retazo + 6000 tramo
-    assert res.yield_pct == pytest.approx(100.0 * 3000 / 8000)
+    assert res.total_stock_length == 4500         # 2000 retazo + 2500 tramo
+    assert res.yield_pct == pytest.approx(100.0 * 3000 / 4500)
 
 
 # --------------------------------------------------------------------------- #
@@ -213,7 +213,7 @@ def test_no_empty_bars_in_the_layout():
 def test_json_reports_source_and_stock_length_per_bar(tmp_path):
     from nester.tube.report import write_reports
 
-    spec = StockSpec(profile="p", stock_length=6000, extra_stock=rem((2400, "R-0001")))
+    spec = StockSpec(profile="p", stock_length=2500, extra_stock=rem((2400, "R-0001")))
     res = pack_profile(mk("p", [2000, 1500]), spec)
     written = write_reports([res], str(tmp_path), "job", {"generated": "", "lang": "es"})
     data = json.loads(open([w for w in written if w.endswith(".json")][0]).read())
@@ -225,7 +225,7 @@ def test_json_reports_source_and_stock_length_per_bar(tmp_path):
     layout = {b["source"]: b for b in prof["layout"]}
     assert set(layout) == {"R-0001", "nuevo"}
     assert layout["R-0001"]["stock_length"] == 2400
-    assert layout["nuevo"]["stock_length"] == 6000
+    assert layout["nuevo"]["stock_length"] == 2500
 
 
 def test_pdf_draws_a_mixed_length_plan(tmp_path):
@@ -246,11 +246,11 @@ def test_pdf_draws_a_mixed_length_plan(tmp_path):
 def test_pdf_bar_label_names_the_source():
     from nester.tube.report import _LANG, _bar_label, _tramo_numbers
 
-    spec = StockSpec(profile="p", stock_length=6000, extra_stock=rem((2400, "R-0001")))
+    spec = StockSpec(profile="p", stock_length=2500, extra_stock=rem((2400, "R-0001")))
     res = pack_profile(mk("p", [2000, 1500]), spec)
     nums = _tramo_numbers(res)
     labels = [_bar_label(_LANG["es"], b, nums) for b in res.bars]
-    assert "RETAZO R-0001 (2400 mm)" in labels
+    assert "SOBRANTE R-0001 (2400 mm)" in labels
     # tramo numbering counts only the bars actually bought
     assert "TRAMO 1" in labels
 
@@ -258,13 +258,13 @@ def test_pdf_bar_label_names_the_source():
 def test_iges_nest_boxes_each_bar_at_its_own_length(tmp_path):
     from nester.tube.iges_nest import write_nest_iges
 
-    spec = StockSpec(profile="p", stock_length=6000, extra_stock=rem((2400, "R-0001")))
+    spec = StockSpec(profile="p", stock_length=2500, extra_stock=rem((2400, "R-0001")))
     res = pack_profile(mk("p", [2000, 1500]), spec)
     path = tmp_path / "nest.igs"
     write_nest_iges([res], str(path), {"p": (50.0, 50.0)})
     text = path.read_text()
     assert "2400." in text            # the retazo bar outline
-    assert "6000." in text            # the tramo bar outline
+    assert "2500." in text            # the tramo bar outline
 
 
 # --------------------------------------------------------------------------- #

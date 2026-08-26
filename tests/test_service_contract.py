@@ -30,11 +30,20 @@ def test_native_profile_is_snake_case_engine_vocabulary():
     d = profile_result_to_dict(packed())
     assert set(d) == {
         "profile", "bars_needed", "new_bars_needed", "remnants_used",
-        "stock_length_mm", "usable_length_mm",
-        "total_part_length_mm", "total_drop_mm", "yield_pct", "bars", "unplaceable",
+        "remnants_unused", "stock_length_mm", "usable_length_mm",
+        "total_part_length_mm", "total_drop_mm", "yield_pct",
+        "net_yield_pct", "gross_yield_pct", "min_remnant_mm",
+        "reclaimable_mm", "waste_mm", "bars", "unplaceable",
     }
     assert set(d["bars"][0]) == {
-        "bar_index", "stock_length_mm", "source", "pieces_mm", "drop_mm"}
+        "bar_index", "stock_length_mm", "source", "pieces_mm", "drop_mm",
+        "leftover_mm", "waste_mm"}
+    # The net/gross pair is additive: yield_pct keeps its exact value, and with
+    # no min_remnant nothing is reclaimable, so net == gross == yield_pct.
+    assert d["min_remnant_mm"] == 0
+    assert d["reclaimable_mm"] == 0
+    assert d["gross_yield_pct"] == d["yield_pct"] == d["net_yield_pct"]
+    assert d["waste_mm"] == round(6000 - d["total_part_length_mm"], 4)
     assert d["bars_needed"] == 1
     assert d["new_bars_needed"] == 1
     assert d["remnants_used"] == []
@@ -50,11 +59,14 @@ def test_native_profile_reports_remnant_stock():
     """E9: a bar cut from a retazo names it, and it doesn't count as a purchase."""
     parts = [Part(name=f"p{i}", profile="2x2_c18", length=L)
              for i, L in enumerate([2000.0, 1500.0, 1200.0])]
-    spec = StockSpec(profile="2x2_c18", stock_length=6000, kerf=3, back_trim=300,
+    # 2.5 m tramos: here the retazo genuinely removes one from the order (3 -> 2)
+    # so it is opened. One that bought nothing would be declined and reported
+    # under remnants_unused with reason "no_gain".
+    spec = StockSpec(profile="2x2_c18", stock_length=2500, kerf=3, back_trim=300,
                      extra_stock=(ExtraStock(length=2400.0, label="R-0001"),))
     d = profile_result_to_dict(pack_profile(parts, spec))
-    assert d["bars_needed"] == 2            # total bars used
-    assert d["new_bars_needed"] == 1        # only one tramo to buy
+    assert d["bars_needed"] == 3            # total bars used
+    assert d["new_bars_needed"] == 2        # two tramos to buy, not three
     assert d["remnants_used"] == ["R-0001"]
     by_source = {b["source"]: b for b in d["bars"]}
     assert set(by_source) == {"nuevo", "R-0001"}

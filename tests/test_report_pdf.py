@@ -81,24 +81,27 @@ def test_english_report_translates_the_same_layout(tmp_path):
 # --------------------------------------------------------------------------- #
 
 def test_shopping_box_counts_only_new_bars_and_names_the_remnants(tmp_path):
-    spec = StockSpec(profile="p", stock_length=6000, kerf=3,
+    # 2.5 m stock: the 2400 retazo really does remove a tramo, so the plan
+    # opens it (a retazo that bought nothing would be declined — see
+    # tests/test_remnants.py).
+    spec = StockSpec(profile="p", stock_length=2500, kerf=3,
                      extra_stock=(ExtraStock(2400, "R-0001"),))
-    res = pack_profile(_mk("p", [2000, 1500, 1200]), spec)
+    res = pack_profile(_mk("p", [2000, 1500]), spec)
     assert res.new_bars_needed == 1 and res.remnants_used == ["R-0001"]
     _, pages = _pdf(tmp_path, [res])
     cover = pages[0]
     assert "1 tramo" in cover                    # buy one, not two
-    assert "Retazos usados" in cover
+    assert "Sobrantes usados" in cover
     assert "R-0001" in cover
 
 
 def test_remnant_bar_is_drawn_at_its_own_length_and_labelled(tmp_path):
-    spec = StockSpec(profile="p", stock_length=6000, kerf=3,
+    spec = StockSpec(profile="p", stock_length=2500, kerf=3,
                      extra_stock=(ExtraStock(2400, "R-0001"),))
     res = pack_profile(_mk("p", [2000, 1500]), spec)
     _, pages = _pdf(tmp_path, [res])
     blob = "\n".join(pages)
-    assert "RETAZO R-0001 (2400 mm)" in blob
+    assert "SOBRANTE R-0001 (2400 mm)" in blob
     assert "TRAMO 1" in blob                     # the bought bar keeps ordinal 1
 
 
@@ -159,3 +162,61 @@ def test_labels_sheet_has_one_tag_per_cut(tmp_path):
     labels = [p for p in pages if "Etiquetas" in p][0]
     assert f"{n} etiquetas" in labels
     assert "LED40-P01-01" in labels              # job · piece · running folio
+
+
+# --------------------------------------------------------------------------- #
+# Vocabulary — the words the shop reads (product-owner rulings)
+# --------------------------------------------------------------------------- #
+
+def _vocab_plan(min_remnant=200.0):
+    spec = StockSpec(profile="40x40x2_c14", stock_length=6000, kerf=3,
+                     back_trim=300, min_remnant=min_remnant,
+                     extra_stock=(ExtraStock(5500, "R-0001"),))
+    return pack_profile(_mk("40x40x2_c14", [1900, 1900, 1240, 862.5, 640, 385.5],
+                            name="Poste_Vertical"), spec)
+
+
+def test_cover_says_ranura_de_corte_and_never_a_bare_kerf(tmp_path):
+    _, pages = _pdf(tmp_path, [_vocab_plan()])
+    cover = pages[0]
+    assert "(KERF)" in cover                     # the parenthetical is never dropped
+    assert cover.count("KERF") == cover.count("(KERF)")
+    assert "RANURA" in cover
+    # ... and the prose form in the parameters column
+    assert "Ranura de corte (kerf)" in cover
+    assert "\n" + "Kerf" not in cover
+
+
+def test_cover_accounts_band_has_both_sobrante_and_merma(tmp_path):
+    _, pages = _pdf(tmp_path, [_vocab_plan()])
+    cover = pages[0]
+    assert "CUENTAS DEL MATERIAL" in cover
+    assert "COMPRADO" in cover and "DE SOBRANTE" in cover
+    assert "EN PIEZAS" in cover and "ZONA MUERTA" in cover
+    assert "SOBRANTE" in cover and "MERMA" in cover
+    assert "APROV." in cover
+
+
+def test_no_min_remnant_means_no_merma_column(tmp_path):
+    _, pages = _pdf(tmp_path, [_vocab_plan(min_remnant=0)])
+    cover = pages[0]
+    assert "SOBRANTE" in cover
+    assert "MERMA" not in cover                  # nothing was classified
+
+
+def test_the_spanish_plan_never_says_retazo(tmp_path):
+    """One word for a piece worth keeping, and it is 'sobrante'."""
+    _, pages = _pdf(tmp_path, [_vocab_plan()])
+    blob = "\n".join(pages)
+    assert "RETAZO" not in blob and "retazo" not in blob.lower()
+    assert "SOBRANTE R-0001 (5500 mm)" in blob   # the bar label
+    assert "Sobrantes usados" in pages[0]
+
+
+def test_english_keeps_remnant_kerf_and_waste(tmp_path):
+    _, pages = _pdf(tmp_path, [_vocab_plan()], lang="en")
+    blob = "\n".join(pages)
+    assert "KERF" in blob and "WASTE" in blob
+    assert "REMNANT R-0001 (5500 mm)" in blob
+    assert "Remnants used" in pages[0]
+    assert "SOBRANTE" not in blob and "MERMA" not in blob
