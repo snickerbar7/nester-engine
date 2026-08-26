@@ -126,13 +126,19 @@ def test_a_fitting_retazo_is_spent_before_any_new_sheet_is_bought():
 
 
 def test_retazos_are_consumed_smallest_area_first():
-    """Order is the whole policy: big offcuts stay free for big parts."""
+    """Order is the whole policy: big offcuts stay free for big parts.
+
+    Asserted on the greedy walk, which spends the rack unconditionally, so the
+    ORDER is isolated from the separate question of WHETHER to spend it (see
+    test_the_rack_is_declined_when_it_would_not_save_a_purchase).
+    """
     spec = SheetSpec(width=1000, height=1000, margin=5, part_gap=2)
     extra = [ExtraSheet(400, 300, "R-BIG"),      # 120 000 mm2
              ExtraSheet(200, 150, "R-SMALL"),    #  30 000 mm2
              ExtraSheet(300, 200, "R-MID")]      #  60 000 mm2
     result = nest([FlatPart("a.dxf", rect(80, 40), qty=80)], spec,
-                  rotation="ortho", time_per_sheet=1, seed=0, extra_sheets=extra)
+                  rotation="ortho", time_per_sheet=1, seed=0, extra_sheets=extra,
+                  minimize_sheets=False)
 
     assert result.remnants_used == ["R-SMALL", "R-MID", "R-BIG"]
     # the retazo sheets come first, in that order, and each is its own size
@@ -146,11 +152,57 @@ def test_retazos_are_consumed_smallest_area_first():
     _assert_each_sheet_holds_its_own_stock(result)
 
 
+def test_retazos_that_do_save_a_purchase_are_still_spent_smallest_first():
+    """The order rule survives the decision rule: six parts need two new sheets
+    on their own, and the two offcuts between them buy one of those back."""
+    spec = SheetSpec(width=1000, height=1000, margin=5, part_gap=2)
+    extra = [ExtraSheet(600, 600, "R-BIG"), ExtraSheet(500, 500, "R-SMALL")]
+    parts = [FlatPart("placa.dxf", rect(480, 480), qty=6)]
+
+    plain = nest(parts, spec, rotation="ortho", time_per_sheet=1, seed=0)
+    assert plain.new_sheets_needed == 2                 # 4 per sheet, 6 parts
+
+    result = nest(parts, spec, rotation="ortho", time_per_sheet=1, seed=0,
+                  extra_sheets=extra)
+    assert result.new_sheets_needed == 1                # the rack bought one back
+    assert result.remnants_used == ["R-SMALL", "R-BIG"]
+    _assert_rack_is_conserved(result, extra)
+    _assert_each_sheet_holds_its_own_stock(result)
+
+
+def test_the_rack_is_declined_when_it_would_not_save_a_purchase():
+    """A retazo spent for nothing is a real loss: same purchase, and the shop is
+    down a physical offcut. So the nest leaves it where it is worth most.
+
+    This is the invariant the whole search exists for — using material that was
+    already paid for may never make a headline number worse.
+    """
+    spec = SheetSpec(width=1000, height=1000, margin=5, part_gap=2)
+    extra = [ExtraSheet(400, 300, "R-BIG"), ExtraSheet(200, 150, "R-SMALL")]
+    parts = [FlatPart("a.dxf", rect(80, 40), qty=80)]   # comfortably one sheet
+
+    plain = nest(parts, spec, rotation="ortho", time_per_sheet=1, seed=0)
+    racked = nest(parts, spec, rotation="ortho", time_per_sheet=1, seed=0,
+                  extra_sheets=extra, min_remnant=100)
+
+    assert racked.new_sheets_needed <= plain.new_sheets_needed
+    assert racked.remnants_used == []
+    assert {e.label for e in racked.remnants_unused} == {"R-BIG", "R-SMALL"}
+    # and it says WHY, so the plan can tell the shop the rack was considered
+    assert set(racked.remnant_reasons.values()) == {"no_gain"}
+    _assert_rack_is_conserved(racked, extra)
+
+
 def test_total_area_sums_the_real_sheets_not_a_count_times_the_nominal_sheet():
     spec = SheetSpec(width=1000, height=800, margin=5, part_gap=2)   # 800 000 mm2
     extra = [ExtraSheet(500, 400, "R-ok")]                           # 200 000 mm2
-    result = nest([FlatPart("placa.dxf", rect(400, 300), qty=4)], spec,
-                  rotation="ortho", time_per_sheet=1, seed=0, extra_sheets=extra)
+    # Six parts need two new sheets on their own, so the offcut is worth
+    # opening — which is the only condition under which it is opened at all.
+    parts = [FlatPart("placa.dxf", rect(400, 300), qty=6)]
+    assert nest(parts, spec, rotation="ortho", time_per_sheet=1,
+                seed=0).new_sheets_needed == 2
+    result = nest(parts, spec, rotation="ortho", time_per_sheet=1, seed=0,
+                  extra_sheets=extra)
 
     assert result.remnants_used == ["R-ok"]
     assert result.new_sheets_needed >= 1

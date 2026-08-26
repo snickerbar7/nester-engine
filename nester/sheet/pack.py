@@ -45,7 +45,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .holes import DEFAULT_MIN_HOLE_SIDE, nest_into_free_area, nest_into_holes
 from .model import (
-    NEW_SHEET, REMNANT_JOB_ENDED, REMNANT_NO_FIT, REMNANT_TOO_SMALL,
+    NEW_SHEET, REMNANT_JOB_ENDED, REMNANT_NO_FIT, REMNANT_NO_GAIN,
+    REMNANT_TOO_SMALL,
     ExtraSheet, FlatPart, Leftover, NestResult, Placement, Point,
     SearchInfo, SheetLayout, SheetSpec, polygon_area, transform,
 )
@@ -288,15 +289,21 @@ def nest(
     # ----------------------------------------------------------------- #
 
     def _pack_with_budget(
-        budget: Optional[int], attempt: int = 1
+        budget: Optional[int], attempt: int = 1, rack_limit: Optional[int] = None
     ) -> Tuple[NestResult, Dict[str, int]]:
         """Nest under a ceiling of ``budget`` new sheets (None = unbounded).
 
-        The stock sequence is: every seeded retazo (smallest first), then at
-        most ``budget`` new sheets. When the ceiling is reached the walk STOPS
-        and hands back what is still owed, instead of opening sheet
-        ``budget + 1``. An empty leftover map means the attempt was feasible.
+        The stock sequence is: up to ``rack_limit`` seeded retazos (smallest
+        first, None = the whole rack), then at most ``budget`` new sheets. When
+        the ceiling is reached the walk STOPS and hands back what is still
+        owed, instead of opening sheet ``budget + 1``. An empty leftover map
+        means the attempt was feasible.
+
+        ``rack_limit=0`` is what lets the caller ask the question the metric
+        cares about: can this job be done, for the same money, WITHOUT touching
+        the shop's offcuts?
         """
+        rack_cap = len(pool) if rack_limit is None else max(0, min(rack_limit, len(pool)))
         result = _new_result()
         remaining = dict(base_remaining)
         pool_pos = 0
@@ -316,7 +323,7 @@ def nest(
             remnant: Optional[ExtraSheet] = None
             stock = spec
             source = NEW_SHEET
-            if pool_pos < len(pool):
+            if pool_pos < rack_cap:
                 remnant = pool[pool_pos]
                 try:
                     stock = spec.resized(remnant.width, remnant.height)
@@ -462,10 +469,14 @@ def nest(
                 ))
 
         # The job finished before the rack did — whatever is left was never
-        # opened and is still the shop's to use.
-        for extra in pool[pool_pos:]:
+        # opened and is still the shop's to use. A piece the caller held back
+        # (beyond ``rack_limit``) was not "not reached": it was declined,
+        # because opening it would not have changed what the shop has to buy.
+        for i, extra in enumerate(pool[pool_pos:], start=pool_pos):
             result.remnants_unused.append(extra)
-            result.remnant_reasons.setdefault(extra.label, REMNANT_JOB_ENDED)
+            result.remnant_reasons.setdefault(
+                extra.label,
+                REMNANT_NO_GAIN if i >= rack_cap else REMNANT_JOB_ENDED)
         return result, {pid: n for pid, n in remaining.items() if n > 0}
 
     if not minimize_sheets:
@@ -475,6 +486,7 @@ def nest(
         _pack_with_budget,
         catalog=catalog,
         base_remaining=base_remaining,
+        orient=orient,
         spec=spec,
         pool=pool,
         nest_in_holes=nest_in_holes,
@@ -494,10 +506,11 @@ def _usable_area(spec: SheetSpec, width: float, height: float) -> float:
 
 
 def _search(
-    attempt_fn: Callable[[Optional[int], int], Tuple[NestResult, Dict[str, int]]],
+    attempt_fn: Callable[..., Tuple[NestResult, Dict[str, int]]],
     *,
     catalog: Dict[str, FlatPart],
     base_remaining: Dict[str, int],
+    orient: Dict[str, Optional[Tuple[float, ...]]],
     spec: SheetSpec,
     pool: Sequence[ExtraSheet],
     nest_in_holes: bool,
@@ -505,108 +518,149 @@ def _search(
     search_budget_s: float,
     should_cancel: Optional[Callable[[], bool]],
 ) -> NestResult:
-    """Find the fewest NEW sheets the job can be done in.
+    """Find the fewest NEW sheets the job can be done in — and spend the rack
+    only when spending it is what removes a purchase.
 
     The greedy walk this replaces could only ever answer "how many sheets did I
     happen to need", because it solved one sheet at a time and never revisited
-    the decision. Measured consequence: offering a job two retazos spent two
-    physical offcuts, bought the SAME three sheets, and dropped the headline
-    yield 7 points. A shop that follows the product's own advice was punished
-    for it.
+    the decision. Two measured consequences, both on the same job:
 
-    So: re-solve under a ceiling, and lower the ceiling while the job stays
-    feasible. Each attempt costs a full solve, so the walk is deliberately
-    short —
+    * offering it two retazos spent two physical offcuts and bought the SAME
+      three sheets — the shop paid an offcut for nothing;
+    * because those offcuts entered the denominator, the headline yield FELL.
+      The product punished a shop for taking its own advice.
 
-    * start at the **area floor** (net part area, less what the rack can hold,
-      over one new sheet's usable area). No packing beats it, so it is both the
-      opening probe and the stop condition;
-    * a failed attempt jumps to what the yield it actually OBSERVED says is
-      needed, rather than stepping +1 blindly;
-    * a feasible attempt probes one lower, but only when a lower count has not
-      already been proven impossible;
-    * whatever happens, the BEST FEASIBLE result seen is what comes back. The
-      search running out of attempts, time or ceiling sets ``capped`` — it never
-      fails a job that a greedy walk would have completed, because the last
-      resort IS the unbounded greedy walk.
+    So the search runs in two phases:
+
+    1. **without the rack**, laddering the ceiling: start at the area floor, and
+       on a miss jump to what the yield it actually OBSERVED says is needed
+       rather than stepping +1 into another doomed solve;
+    2. **with the rack**, but only at ceilings BELOW what phase 1 achieved. A
+       retazo is worth opening exactly when it buys a sheet back. If it cannot,
+       phase 1's answer stands and every offcut is reported unused with reason
+       ``no_gain`` — still on the rack, which is where it is worth most.
+
+    Phase 1 is skipped when the rack is load-bearing (some part fits an offcut
+    but not a new sheet): there, "without the rack" is not a job at all.
+
+    Whatever happens, the BEST FEASIBLE result comes back. Running out of
+    attempts, time or ceiling sets ``capped``; if nothing was feasible the last
+    resort is the unbounded greedy walk, so a job is never failed for the search
+    running out of road.
     """
     started = time.monotonic()
+    state = {"attempts": 0, "tried": [], "capped": False}
 
     def out_of_time() -> bool:
         return bool(search_budget_s) and (time.monotonic() - started) >= search_budget_s
 
-    # Area floor. A part's holes are usable surface only when the hole pass is
-    # on; otherwise they leave as skeleton, so the OUTER area is what a sheet
-    # really has to swallow.
-    part_area = sum(n * (catalog[pid].area if nest_in_holes else catalog[pid].outer_area)
-                    for pid, n in base_remaining.items())
-    rack_area = sum(_usable_area(spec, e.width, e.height) for e in pool)
-    new_area = spec.usable_width * spec.usable_height
-    floor = 1
-    if new_area > 0:
-        floor = max(1, math.ceil((part_area - rack_area) / new_area))
-    floor = min(floor, max_new_sheets)
+    def area_floor(rack_area: float, lowest: int) -> int:
+        """Sheets no packing can beat. ``lowest`` is 0 only when a rack exists —
+        a job that fits entirely on the shop's offcuts buys nothing at all, and
+        a floor of 1 would hide that answer from the search."""
+        # A part's holes are usable surface only when the hole pass is on;
+        # otherwise they leave as skeleton, so the OUTER area is what a sheet
+        # really has to swallow.
+        part_area = sum(n * (catalog[pid].area if nest_in_holes else catalog[pid].outer_area)
+                        for pid, n in base_remaining.items())
+        new_area = spec.usable_width * spec.usable_height
+        if new_area <= 0:  # pragma: no cover - SheetSpec refuses this
+            return lowest
+        return min(max(lowest, math.ceil((part_area - rack_area) / new_area)), max_new_sheets)
 
-    tried: List[int] = []
-    best: Optional[NestResult] = None
-    best_n: Optional[int] = None
-    lowest_infeasible = 0          # every ceiling <= this is known impossible
-    budget: Optional[int] = floor
-    capped = False
-    proved = False
-
-    while budget is not None and len(tried) < MAX_SEARCH_ATTEMPTS:
+    def run(budget: Optional[int], rack_limit: Optional[int]):
         if should_cancel is not None and should_cancel():
-            raise NestCancelled(best if best is not None else NestResult(spec=spec))
-        tried.append(budget)
-        try:
-            result, owed = attempt_fn(budget, len(tried))
-        except NestCancelled as e:
-            raise NestCancelled(best if best is not None else e.partial) from None
+            raise NestCancelled(NestResult(spec=spec))
+        state["attempts"] += 1
+        # -1 marks the unbounded greedy fallback; 0 is a REAL ceiling meaning
+        # "buy nothing, this job fits on the rack".
+        state["tried"].append(budget if budget is not None else -1)
+        return attempt_fn(budget, state["attempts"], rack_limit)
 
-        if not owed:
-            used = result.new_sheets_needed
-            if best_n is None or used < best_n:
-                best, best_n = result, used
-            if used <= floor or used - 1 <= lowest_infeasible:
-                proved = True             # nothing lower is reachable
+    def ladder(rack_limit: Optional[int], start: int, floor: int, cap: int,
+               climb: bool) -> Tuple[Optional[NestResult], Optional[int]]:
+        """Descend ceilings from ``start``; return the best feasible attempt.
+
+        ``climb`` allows the yield-seeded jump UPWARD when the opening probe is
+        infeasible. Phase 2 never climbs: it exists only to beat phase 1, and a
+        ceiling it cannot meet is not worth another solve.
+        """
+        best: Optional[NestResult] = None
+        best_n: Optional[int] = None
+        lowest_infeasible = 0
+        budget: Optional[int] = start
+        while budget is not None and state["attempts"] < MAX_SEARCH_ATTEMPTS:
+            try:
+                result, owed = run(budget, rack_limit)
+            except NestCancelled as e:
+                raise NestCancelled(best if best is not None else e.partial) from None
+            if not owed:
+                used = result.new_sheets_needed
+                if best_n is None or used < best_n:
+                    best, best_n = result, used
+                if used <= floor or used - 1 <= lowest_infeasible:
+                    return best, best_n          # nothing lower is reachable
+                budget = used - 1
+            elif not climb:
+                break                            # phase 2: one honest try
+            else:
+                lowest_infeasible = max(lowest_infeasible, budget)
+                owed_area = sum(n * catalog[pid].area for pid, n in owed.items())
+                per_new = _net_area_per_new_sheet(result)
+                step = math.ceil(owed_area / per_new) if per_new > 0 else 1
+                budget = budget + max(1, step)
+            if budget is None:
                 break
-            budget = used - 1
-        else:
-            lowest_infeasible = max(lowest_infeasible, budget)
-            # What the attempt LEARNED: how much net part area a new sheet
-            # actually swallowed. Project the shortfall onto that instead of
-            # stepping +1 into another doomed solve.
-            owed_area = sum(n * catalog[pid].area for pid, n in owed.items())
-            per_new = _net_area_per_new_sheet(result)
-            step = math.ceil(owed_area / per_new) if per_new > 0 else 1
-            budget = budget + max(1, step)
+            if budget > cap:
+                budget, state["capped"] = None, True
+            elif budget in state["tried"] or (best_n is not None and budget >= best_n):
+                budget = None                    # nothing new left to learn
+            elif out_of_time():
+                budget, state["capped"] = None, True
+        if state["attempts"] >= MAX_SEARCH_ATTEMPTS and best is None:
+            state["capped"] = True
+        return best, best_n
 
-        if budget > max_new_sheets:
-            budget, capped = None, True
-        elif budget in tried or (best_n is not None and budget >= best_n):
-            budget = None                 # nothing new left to learn
-        elif out_of_time():
-            budget, capped = None, True
+    rack_area = sum(_usable_area(spec, e.width, e.height) for e in pool)
+    # Is the rack load-bearing? A part that no NEW sheet can hold has to have an
+    # offcut, so there is no "without the rack" job to compare against.
+    rack_mandatory = bool(pool) and any(
+        not _fits_sheet(catalog[pid], spec.usable_width, spec.usable_height, orient[pid])
+        for pid in catalog)
 
-    if not proved and len(tried) >= MAX_SEARCH_ATTEMPTS:
-        capped = True
+    floor_rack = area_floor(rack_area, 0 if pool else 1)
+    if not pool or rack_mandatory:
+        floor = floor_rack
+        best, best_n = ladder(None, max(floor, 1) if not pool else floor,
+                              floor, max_new_sheets, climb=True)
+    else:
+        floor = area_floor(0.0, 1)
+        best, best_n = ladder(0, floor, floor, max_new_sheets, climb=True)
+        # Phase 2: can an offcut buy a sheet back? Only ceilings BELOW what the
+        # job already achieves without touching the rack are worth a solve — at
+        # the same count the rack is pure loss, since the shop would still buy
+        # the same sheets AND be down two offcuts.
+        if (best_n is not None and best_n > floor_rack
+                and state["attempts"] < MAX_SEARCH_ATTEMPTS and not out_of_time()):
+            racked, racked_n = ladder(None, best_n - 1, floor_rack, best_n - 1, climb=False)
+            if racked is not None and racked_n is not None and racked_n < best_n:
+                best, best_n, floor = racked, racked_n, floor_rack
 
     if best is None:
         # Nothing feasible inside the ceiling. NEVER fail a job for that: fall
         # back to the unbounded greedy walk, which is exactly what this module
         # did before the search existed.
-        capped = True
-        best, _owed = attempt_fn(None, len(tried) + 1)
+        state["capped"] = True
+        best, _owed = attempt_fn(None, state["attempts"] + 1, None)
         best_n = None                     # no ceiling produced this layout
 
     best.search = SearchInfo(
         enabled=True,
         area_floor_sheets=floor,
-        ceiling_tried=tuple(tried),
+        ceiling_tried=tuple(state["tried"]),
         ceiling_used=best_n,
-        attempts=len(tried),
-        capped=capped,
+        attempts=state["attempts"],
+        capped=state["capped"],
     )
     return best
 

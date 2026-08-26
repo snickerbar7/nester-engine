@@ -40,6 +40,10 @@ NEW_SHEET = "nueva"
 REMNANT_NO_FIT = "no_fit"
 REMNANT_TOO_SMALL = "too_small_for_margin"
 REMNANT_JOB_ENDED = "job_ended"
+# Declined on purpose: opening it would not have changed what the shop buys, so
+# spending it would have cost a physical offcut for nothing. See
+# ``nester.sheet.pack._search``.
+REMNANT_NO_GAIN = "no_gain"
 
 
 def transform(points: Sequence[Point], deg: float, tx: float, ty: float) -> List[Point]:
