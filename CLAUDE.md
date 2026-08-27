@@ -389,6 +389,30 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   come out inside a slug, so the plan flags each one (`Placement.in_hole_of`),
   gives them their own `EN BARRENO` row in the sheet's part list, and tells the
   operator not to bin the slug with the skeleton.
+
+  > **Correctness invariant, both top-up passes: overlap is checked
+  > unconditionally, gap is an ADDITIONAL constraint on top.** `_try_place` in
+  > `nester/sheet/holes.py` places successive candidates in the same hole or
+  > free-area region by testing each against every already-placed `blocker` in
+  > that region. A guard that reads `if gap > 0 and <the only overlap
+  > check>:` is wrong: at `part_gap == 0` — a legal, defaultable value, not an
+  > edge case — the condition short-circuits to False and blockers are never
+  > consulted, so every copy after the first lands on the identical
+  > bottom-left candidate and stacks exactly on top of it. Found on a real
+  > repro (700×520×9, 380×300×14, 120×90×40 on 2440×1220, `--gap 0`): 300-435
+  > overlapping placement pairs, every seed, and the plan reported it needed
+  > FEWER sheets than the true (non-overlapping) answer — the defect made the
+  > plan look better while being physically impossible. Fixed in
+  > `tests/test_sheet_gap_zero_overlap.py`, which pins that exact repro at
+  > `gap=0` (must be zero overlapping pairs, measured by reconstructing
+  > placements with `transform` + shapely, never by trusting a field the
+  > engine computed about itself) and property-tests random jobs across
+  > `gap ∈ {0, 0.5, 3, 8}` for: no overlap, gap respected when `gap > 0`, every
+  > placement inside its OWN sheet's usable area (`sheet.spec`, which differs
+  > from the job's nominal sheet on a retazo), and quantity conservation. Any
+  > future guard in this module conditioned on `gap > 0` (or any other
+  > parameter's zero default) needs the same scrutiny: check whether it is
+  > protecting something that must hold unconditionally.
 - **Kilos (E8, 2D)**: `nester/materials.py` is a density **lookup, not an
   estimator**. `--material` resolves free-text Spanish/English trade names
   ("acero inoxidable 304", "lámina negra", "aluminio 6061", "galvanizada") to

@@ -255,7 +255,16 @@ def _try_place(Polygon, prep_region, region, part: FlatPart, deg: float,
             cand = Polygon([(x + tx, y + ty) for (x, y) in pts])
             if not prep_region.contains(cand):
                 continue
-            if gap > 0 and any(cand.distance(b) < gap - 1e-6 for b in blockers):
+            # Overlap with anything already placed in this region (main-nest
+            # blockers, or a copy this SAME call already dropped) must be
+            # rejected unconditionally — the gap clearance is an ADDITIONAL
+            # constraint on top, not a replacement for it. At gap == 0 the old
+            # guard here short-circuited to False, so `blockers` was never
+            # consulted at all and every copy landed on the SAME bottom-left
+            # candidate, stacking exactly-overlapping parts (E-gap0-overlap).
+            if any(cand.intersection(b).area > _EPS
+                   or (gap > 0 and cand.distance(b) < gap - 1e-6)
+                   for b in blockers):
                 continue
             return tx, ty
     return None
