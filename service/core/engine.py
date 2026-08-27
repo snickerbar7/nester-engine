@@ -22,6 +22,7 @@ from . import r2  # object keys are opaque strings supplied by the caller
 
 # --- tube pipeline (unchanged engine) ---
 from nester.tube.cli import _load_parts as _tube_load_parts
+from nester.tube.cli import last_load_notes as _tube_load_notes
 from nester.tube.model import ExtraStock, ProfileResult, StockSpec
 from nester.tube.packing import pack_all
 from nester.tube.profile import (
@@ -136,6 +137,10 @@ def extract_tube(files: List[InFile], profile_regex: str, qty_regex: Optional[st
         "parts": out_parts,
         "profiles": sorted({p["profile"] for p in out_parts}),
         "errors": errors,
+        # E25: IGES entity types the reader could not account for. NOTES, not
+        # warnings — `warnings` means "an artifact could not be produced" on
+        # Harriet's frozen contract, and this is a remark about the job.
+        "notes": _tube_load_notes(),
     }
 
 
@@ -314,6 +319,9 @@ def nest_tube(
         # sets multiplies demand BEFORE packing: the bars to buy scale with it.
         parts, errors, cross = _tube_load_parts(
             paths, profile_regex, qty_regex, _sets_map(files))
+        # E25 parser notes: unaccounted-for entity types. Separate channel from
+        # `warnings` (which Harriet reads as "artifact missing").
+        notes: List[str] = _tube_load_notes()
         if not parts:
             raise ValueError("no readable parts: " + "; ".join(errors) if errors else "no parts")
         specs, stock_warnings = _build_specs(
@@ -346,7 +354,8 @@ def nest_tube(
             artifacts = _upload_artifacts(written, out_prefix)
 
     return {"mode": "tube", "unit": unit, "result": nest_result,
-            "artifacts": artifacts, "errors": errors, "warnings": warnings}
+            "artifacts": artifacts, "errors": errors, "warnings": warnings,
+            "notes": notes}
 
 
 def sheet_part_index(

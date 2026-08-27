@@ -15,6 +15,7 @@ import glob
 import json
 import os
 import sys
+import threading
 from typing import Dict, List
 
 from .iges import IgesParseError, check_straight, read_tube
@@ -61,6 +62,10 @@ def main(argv: List[str] | None = None) -> int:
     parts, errors, cross_sections = _load_parts(paths, args.profile_regex, qty_regex, sets)
     for e in errors:
         print(f"  ! {e}", file=sys.stderr)
+    # Entity types the IGES reader could not account for (E25): the length it
+    # reports covers only what it could read, so the operator hears about it.
+    for n in last_load_notes():
+        print(f"  ~ {n}", file=sys.stderr)
     if not parts:
         print("No parts could be read.", file=sys.stderr)
         return 1
@@ -242,6 +247,14 @@ def _expand_inputs(inputs: List[str]) -> List[str]:
     return uniq
 
 
+_tls = threading.local()
+
+
+def last_load_notes() -> List[str]:
+    """Notes from the most recent ``_load_parts`` call ON THIS THREAD (E25)."""
+    return list(getattr(_tls, "notes", []))
+
+
 def _load_parts(
     paths: List[str],
     profile_regex: str,
@@ -256,6 +269,7 @@ def _load_parts(
     """
     parts: List[Part] = []
     errors: List[str] = []
+    notes: List[str] = []
     cross_sections: Dict[str, tuple] = {}
     for path in paths:
         name = os.path.basename(path)
@@ -275,13 +289,29 @@ def _load_parts(
             errors.append(f"{name}: {e}")
             continue
         cross_sections.setdefault(profile, geo.cross_section)
+        # E25: entity types the reader could not account for are never silent.
+        # They are NOTES (a remark about the job), not warnings — `warnings`
+        # means "an artifact could not be produced" on the frozen contract.
+        notes += [f"{name}: {n.split(': ', 1)[-1]}" for n in geo.notes]
         _from_name, _sets, qty = resolve_qty(path, qty_regex, sets)
-        if qty == 1:
-            parts.append(Part(name=name, profile=profile, length=geo.cut_length))
-        else:
-            for i in range(1, qty + 1):
-                parts.append(Part(name=f"{name} #{i}/{qty}", profile=profile,
-                                  length=geo.cut_length))
+        try:
+            if qty == 1:
+                parts.append(Part(name=name, profile=profile, length=geo.cut_length))
+            else:
+                for i in range(1, qty + 1):
+                    parts.append(Part(name=f"{name} #{i}/{qty}", profile=profile,
+                                      length=geo.cut_length))
+        except ValueError as e:
+            # A non-positive length (degenerate geometry) is a per-file error
+            # row, not an unhandled traceback out of the model layer.
+            errors.append(f"{name}: {e}")
+            continue
+    # Notes ride beside the return tuple rather than widening it (the same seam
+    # nester.sheet.dxf_read.read_parts uses for its warnings) — but in a
+    # THREAD-LOCAL, because the service answers concurrent requests in a thread
+    # pool and a note attached to the wrong job is exactly the kind of invented
+    # information this round exists to stop.
+    _tls.notes = list(notes)
     return parts, errors, cross_sections
 
 
