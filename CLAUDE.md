@@ -18,10 +18,25 @@ engine `spyrrow` — which needs 3.11+ — shares the env with the tube tool).
 
 **Don't do the changes inline.** This session orchestrates; agents do the work.
 
+**Cheap hands, quality brain.** Match the model to the KIND of work, not to how
+important the task feels. Reading files is not thinking.
+
 | Grade | Model | For |
 |-------|-------|-----|
-| **Thinking / finding** | quality model (**Opus 5**), effort **high or xhigh** | research, root-cause hunts, "what's wrong with this", auditing a design, choosing an approach |
-| **Executing** | **Sonnet** | implementing what the thinkers found, and any mechanical work — but the brief must be EXPLICIT: exact files, exact contract, what NOT to touch, how to verify |
+| **Hands** — gathering, mechanical | **Haiku** | reading files, extracting facts, mapping a module, listing call sites, running commands, collecting measurements, applying a change someone else already decided |
+| **Brain** — judgement | **Opus 5**, effort **high/xhigh** | root-cause hunts, choosing an approach, auditing a design, adversarial verification, anything where being wrong is expensive |
+| **Executing** a decided change | **Sonnet** | implementing what the thinkers found — but the brief must be EXPLICIT: exact files, exact contract, what NOT to touch, how to verify |
+
+**Never send an Opus to read files.** If a task starts with "go find out what X
+does", that is Haiku's job; hand its structured output to the Opus that has to
+DECIDE something. Pair them rather than paying a quality model to do
+discovery. The E26 correctness sweep is the worked example: six Haiku agents
+mapped every engine module in parallel and each fed an Opus that had to break
+the invariants by RUNNING the code. The Opus never opened a file to find its
+bearings, and the round found ten real defects.
+
+Corollary: a big context is not a reason to reach for a big model — it is a
+reason to summarise with a small one first.
 
 Then **this session audits every agent's output** — read the diff, run the
 gates, decide whether it's actually right. An agent's report is input, not a
