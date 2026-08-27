@@ -278,8 +278,51 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
 - **Contours** come from the **Fusion 360 flat-pattern layer convention**:
   `OUTER_PROFILES` = the cut outline, `INTERIOR_PROFILES` = holes,
   `BEND`/`BEND_EXTENT` = fold lines (dropped). Arcs/splines are flattened; loose
-  `LINE`/`ARC` segments are stitched into closed loops by endpoint matching.
-  Units from the DXF `INSUNITS` flag → **mm**.
+  `LINE`/`ARC` segments are stitched into closed loops by **planar face
+  traversal**. Units from the DXF `INSUNITS` flag → **mm**.
+
+  > **Known-or-loud (E25) — the same doctrine as the IGES reader.** *A reader
+  > that cannot be certain must FAIL LOUDLY or WARN BY NAME; it must never
+  > quietly assume.* Two measured guesses were removed here.
+  >
+  > - **Units.** `_UNIT_TO_MM` now holds the whole `$INSUNITS` table 0–24
+  >   (miles, km, µin, mils, yards, ångström, nm, microns, dm, dam, hm, Gm, AU,
+  >   light years, parsecs, and the four US-survey units). Before, everything
+  >   outside {0,1,2,4,5,6} fell through `.get(..., 1.0)` to millimetres:
+  >   measured, `INSUNITS=14` (decimetres) on a 1000×600 mm part produced a plan
+  >   **100× wrong on each axis, with no warning**. Code **0 (unitless) stays
+  >   mm** — that is "no unit declared", the documented convention, and it is
+  >   defensible. A *declared* code outside the table raises `DxfReadError`
+  >   naming it (ezdxf passes an out-of-range `$INSUNITS` through unclamped, so
+  >   the reader is the only backstop).
+  > - **Stitching.** The old greedy endpoint-chaining welded two DIFFERENT
+  >   closed loops that touched. Three 40×40 squares butted corner to corner —
+  >   the exact form the docstring says Fusion emits — came back as **1 part
+  >   instead of 3**; a 60×60 + 40×40 sharing a corner became one figure-eight
+  >   of *signed* area 2000 mm² (3600−1600) that `validate_part()` happily
+  >   passed; squares 0.03 mm apart (inside the 0.05 stitch tolerance) lost
+  >   **6 parts silently with `unplaceable == []`**, each blob under-reporting
+  >   its footprint by 44% into `yield_pct` and the kilos. And the filter that
+  >   claimed to "keep only rings that actually closed" tested `len(r) >= 3` —
+  >   closure was never re-tested, so a square **missing an edge entirely**
+  >   nested and cut as a complete 100×100 part.
+  >
+  >   `_stitch` is now planar face traversal: cluster endpoints into nodes
+  >   (connectivity ONLY — rings keep their original coordinates, so a
+  >   sub-tolerance gap never perturbs a reported area), two directed
+  >   half-edges per chain, sorted by angle around each node, and walk faces via
+  >   *predecessor of twin*. Rings that merely touch separate **by
+  >   construction**; only CCW (positive-area) faces are kept, so the exterior
+  >   face drops out; a chain that never closes traces a zero-area spur, is
+  >   dropped, and comes back as a warning **naming the gap** ("0.50 mm gap
+  >   between (0.00, 0.00) and (0.00, 0.50)"). Same wall clock as the old greedy
+  >   walk (2400 chains: 0.65 s vs 0.71 s).
+  >
+  > All 17 real DXFs in the repo (270 parts) read byte-identically before and
+  > after. Pinned by `tests/test_dxf_property.py`: **P2** loop isolation over
+  > separations {shared vertex, 0.01, 0.03, 0.05, 0.2, 5.0} with a shuffled edge
+  > pool, **P9** closure-or-diagnostic, **P7** units known-or-loud against a
+  > spec table written independently of the code.
 - **Engine**: `spyrrow` (Rust `sparrow`/`jagua-rs`, MIT) — best-yield irregular
   nesting with real rotation. It solves **strip packing**; we wrap it in a greedy
   **multi-sheet** loop (fixed strip height = sheet height, harvest the block that

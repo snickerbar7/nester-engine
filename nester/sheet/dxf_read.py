@@ -33,14 +33,36 @@ from shapely.geometry import Point as ShPoint
 
 from .model import FlatPart, Point, polygon_area
 
-# DXF INSUNITS flag -> millimetres per unit.
+# DXF $INSUNITS flag -> millimetres per unit (the full documented table). Code 0
+# ("unitless") is the one deliberate exception: it means no unit was declared,
+# and the documented convention is to treat it as mm. Every OTHER declared code
+# must be either mapped here or rejected loudly — never silently defaulted.
 _UNIT_TO_MM = {
-    0: 1.0,     # unitless -> assume mm
-    1: 25.4,    # inches
-    2: 304.8,   # feet
-    4: 1.0,     # millimetres
-    5: 10.0,    # centimetres
-    6: 1000.0,  # metres
+    0: 1.0,                      # unitless -> assume mm (documented convention)
+    1: 25.4,                     # inches
+    2: 304.8,                    # feet
+    3: 1609344.0,                # miles
+    4: 1.0,                      # millimetres
+    5: 10.0,                     # centimetres
+    6: 1000.0,                   # metres
+    7: 1e6,                      # kilometres
+    8: 2.54e-5,                  # microinches
+    9: 0.0254,                   # mils
+    10: 914.4,                   # yards
+    11: 1e-7,                    # angstroms
+    12: 1e-6,                    # nanometres
+    13: 1e-3,                    # microns
+    14: 100.0,                   # decimetres
+    15: 10000.0,                 # decametres
+    16: 100000.0,                # hectometres
+    17: 1e12,                    # gigametres
+    18: 1.495978707e14,          # astronomical units
+    19: 9.4607304725808e18,      # light years
+    20: 3.0856775814913673e19,   # parsecs
+    21: 304.8006096012192,       # US survey feet
+    22: 25.400050800101603,      # US survey inch
+    23: 914.4018288036576,       # US survey yard
+    24: 1609347.2186944375,      # US survey mile
 }
 
 OUTER_LAYER = "OUTER_PROFILES"
@@ -78,7 +100,14 @@ def read_parts(
     except (IOError, ezdxf.DXFError) as e:
         raise DxfReadError(f"{os.path.basename(path)}: cannot read DXF ({e})")
 
-    scale = _UNIT_TO_MM.get(int(doc.units or 0), 1.0)
+    units_code = int(doc.units or 0)
+    if units_code not in _UNIT_TO_MM:
+        raise DxfReadError(
+            f"{os.path.basename(path)}: unrecognized $INSUNITS code {units_code} "
+            f"— refusing to guess a scale (declared unit is not in the DXF spec's "
+            f"0-24 table)."
+        )
+    scale = _UNIT_TO_MM[units_code]
     msp = doc.modelspace()
 
     outer_loops: List[List[Point]] = []
@@ -105,14 +134,23 @@ def read_parts(
         else:
             (fallback_closed if closed else fallback_open).append(_dedup(ring))
 
-    # Stitch the open segments on each cut layer into closed loops.
-    outer_loops += _stitch(open_by_layer[OUTER_LAYER], stitch_tol)
-    inner_loops += _stitch(open_by_layer[INNER_LAYER], stitch_tol)
-
+    # Stitch the open segments on each cut layer into closed loops via planar
+    # face traversal (see _stitch). Dangling / unclosed input never becomes a
+    # ring silently — it comes back as a warning naming the gap.
+    fname = os.path.basename(path)
     warnings: List[str] = []
+    outer_stitched, outer_warn = _stitch(open_by_layer[OUTER_LAYER], stitch_tol)
+    inner_stitched, inner_warn = _stitch(open_by_layer[INNER_LAYER], stitch_tol)
+    outer_loops += outer_stitched
+    inner_loops += inner_stitched
+    warnings += [f"{fname}: {OUTER_LAYER} {w}" for w in outer_warn]
+    warnings += [f"{fname}: {INNER_LAYER} {w}" for w in inner_warn]
+
     if not saw_outer_layer and not outer_loops:
         # Non-standard export: no OUTER_PROFILES layer. Recover from all geometry.
-        loops = fallback_closed + _stitch(fallback_open, stitch_tol)
+        fallback_stitched, fallback_warn = _stitch(fallback_open, stitch_tol)
+        warnings += [f"{fname}: (fallback) {w}" for w in fallback_warn]
+        loops = fallback_closed + fallback_stitched
         loops = [r for r in loops if len(r) >= 3 and polygon_area(r) > 0]
         if not loops:
             raise DxfReadError(
@@ -223,34 +261,197 @@ def _dedup(ring: List[Point], tol: float = 1e-7) -> List[Point]:
     return out
 
 
-def _stitch(chains: List[List[Point]], tol: float) -> List[List[Point]]:
-    """Greedily join open point-chains into closed rings by matching endpoints."""
-    pool = [list(c) for c in chains if len(c) >= 2]
-    rings: List[List[Point]] = []
-    while pool:
-        cur = pool.pop()
-        extended = True
-        while extended:
-            if len(cur) >= 3 and _near(cur[0], cur[-1], tol):
-                break  # closed
-            extended = False
-            for i, ch in enumerate(pool):
-                if _near(cur[-1], ch[0], tol):
-                    cur.extend(ch[1:])
-                elif _near(cur[-1], ch[-1], tol):
-                    cur.extend(reversed(ch[:-1]))
-                elif _near(cur[0], ch[0], tol):
-                    cur[:0] = list(reversed(ch))[1:]
-                elif _near(cur[0], ch[-1], tol):
-                    cur[:0] = ch[:-1]
-                else:
-                    continue
-                pool.pop(i)
-                extended = True
+def _stitch(chains: List[List[Point]], tol: float) -> Tuple[List[List[Point]], List[str]]:
+    """Decompose open point-chains into closed rings by planar face traversal.
+
+    This is the standard way to turn a soup of line segments into polygon
+    loops: cluster shared endpoints into nodes, turn each chain into a pair of
+    directed half-edges, sort the half-edges leaving each node by direction,
+    and walk faces by always continuing into the half-edge immediately
+    clockwise from the current edge's twin. Two rings that only TOUCH at a
+    corner (share a node) come out as two separate faces by construction,
+    because the walk that enters a cut-vertex leaves it via the edge that is
+    adjacent in ANGLE, not merely "some other chain at this point". A chain
+    end that never pairs with anything within ``tol`` is a real degree-1 node:
+    its face walk goes out and back along the same chain (zero signed area) and
+    is dropped, and it is reported by name in the second return value instead
+    of being silently absorbed into a plausible-looking ring.
+
+    Returns ``(rings, warnings)``. ``rings`` are CCW, deduplicated, own their
+    original coordinates (node clustering is for CONNECTIVITY ONLY — a
+    sub-tolerance gap never perturbs a reported ring's geometry).
+    """
+    chains = [list(c) for c in chains if len(c) >= 2]
+    if not chains:
+        return [], []
+
+    # 1. Cluster chain endpoints into nodes (union by proximity, tol-only).
+    endpoints = [c[0] for c in chains] + [c[-1] for c in chains]
+    node_of: List[int] = [-1] * len(endpoints)
+    node_points: List[Point] = []
+    for i, p in enumerate(endpoints):
+        found = None
+        for nid, rep in enumerate(node_points):
+            if _near(p, rep, tol):
+                found = nid
                 break
-        rings.append(_dedup(cur))
-    # keep only rings that actually closed into a polygon
-    return [r for r in rings if len(r) >= 3]
+        if found is None:
+            found = len(node_points)
+            node_points.append(p)
+        node_of[i] = found
+    n = len(chains)
+
+    def start_node(k: int) -> int:
+        return node_of[k]
+
+    def end_node(k: int) -> int:
+        return node_of[n + k]
+
+    # 2. Each chain -> two directed half-edges (forward, reverse). Half-edge
+    # index 2k = forward (chain k as drawn), 2k+1 = reverse. twin(i) = i^1.
+    he_start: List[int] = []
+    he_end: List[int] = []
+    he_pts: List[List[Point]] = []
+    he_angle: List[float] = []
+    for k, c in enumerate(chains):
+        u, v = start_node(k), end_node(k)
+        p0, p1 = c[0], c[1]
+        he_start.append(u)
+        he_end.append(v)
+        he_pts.append(c)
+        he_angle.append(math.atan2(p1[1] - p0[1], p1[0] - p0[0]))
+        rc = list(reversed(c))
+        q0, q1 = rc[0], rc[1]
+        he_start.append(v)
+        he_end.append(u)
+        he_pts.append(rc)
+        he_angle.append(math.atan2(q1[1] - q0[1], q1[0] - q0[0]))
+
+    def twin(i: int) -> int:
+        return i ^ 1
+
+    # 3. Half-edges leaving each node, sorted CCW by direction angle.
+    by_node: dict[int, List[int]] = {}
+    for i, u in enumerate(he_start):
+        by_node.setdefault(u, []).append(i)
+    for u in by_node:
+        by_node[u].sort(key=lambda i: he_angle[i])
+
+    # 4. Face traversal: from half-edge h ending at v, the next half-edge of
+    # THIS face is the one immediately clockwise (predecessor in the CCW
+    # order) from twin(h) in v's rotation. This is the standard rule that
+    # traces faces with the face interior kept on the left, i.e. yields
+    # CCW-wound boundaries for bounded faces (verified below: a lone closed
+    # square comes back as itself, and two squares sharing one corner come
+    # back as two separate rings with their true areas).
+    used = [False] * len(he_start)
+    rings: List[List[Point]] = []
+    ambiguous = 0  # walks that never closed back onto themselves
+
+    for start_i in range(len(he_start)):
+        if used[start_i]:
+            continue
+        pts: List[Point] = [he_pts[start_i][0]]
+        cur = start_i
+        steps = 0
+        limit = len(he_start) + 2
+        closed_walk = False
+        while True:
+            used[cur] = True
+            pts.extend(he_pts[cur][1:])
+            v = he_end[cur]
+            t = twin(cur)
+            neighbors = by_node.get(v, [])
+            if t not in neighbors:
+                break  # inconsistent embedding; can't happen by construction
+            pos = neighbors.index(t)
+            nxt = neighbors[(pos - 1) % len(neighbors)]
+            steps += 1
+            if nxt == start_i:
+                closed_walk = True
+                break
+            if steps > limit:
+                break  # never returned to start: self-intersecting/ambiguous input
+            cur = nxt
+
+        if not closed_walk:
+            ambiguous += 1
+            continue  # never emit a ring built from an unclosed face walk
+
+        ring = _dedup(pts)
+        area = _signed_area(ring) if len(ring) >= 3 else 0.0
+        if len(ring) >= 3 and area > 1e-9:
+            rings.append(_oriented(ring, ccw=True))
+
+    warnings = _dangling_warnings(chains, node_of, n)
+    if ambiguous:
+        warnings.append(
+            f"has {ambiguous} contour(s) that could not be traced into a face "
+            f"(self-intersecting or ambiguous input) — dropped rather than "
+            f"guessed."
+        )
+    return rings, warnings
+
+
+def _dangling_warnings(
+    chains: List[List[Point]],
+    node_of: List[int],
+    n: int,
+) -> List[str]:
+    """Name every open (degree-1) node with the nearest other open endpoint."""
+    # A node's total incidence = # chain-ends coincident there (one outgoing
+    # half-edge per chain-end). Degree 1 means only one chain touches that
+    # point within tol: a real gap, not merely tolerance noise (anything
+    # within tol was already merged into the same node by the caller).
+    incidence: dict[int, int] = {}
+    for u in node_of:
+        incidence[u] = incidence.get(u, 0) + 1
+
+    raw: List[Tuple[Point, int]] = []
+    for k, c in enumerate(chains):
+        raw.append((c[0], node_of[k]))
+        raw.append((c[-1], node_of[n + k]))
+
+    dangling = [(p, nid) for p, nid in raw if incidence.get(nid, 0) == 1]
+    if not dangling:
+        return []
+
+    warnings: List[str] = []
+    reported: set = set()
+    reported_pairs: set = set()
+    for i, (p, nid) in enumerate(dangling):
+        if nid in reported:
+            continue
+        reported.add(nid)
+        best = None
+        best_d = None
+        best_nid = None
+        for j, (q, ojd) in enumerate(dangling):
+            if ojd == nid:
+                continue
+            d = math.hypot(p[0] - q[0], p[1] - q[1])
+            if best_d is None or d < best_d:
+                best_d = d
+                best = q
+                best_nid = ojd
+        pair = frozenset((nid, best_nid)) if best_nid is not None else None
+        if pair is not None and pair in reported_pairs:
+            continue
+        if pair is not None:
+            reported_pairs.add(pair)
+        if best is None:
+            warnings.append(
+                f"has an open contour — endpoint ({p[0]:.2f}, {p[1]:.2f}) never "
+                f"reconnects (no other open endpoint in this layer); not closed, "
+                f"contour dropped."
+            )
+        else:
+            warnings.append(
+                f"has an open contour — {best_d:.2f} mm gap between "
+                f"({p[0]:.2f}, {p[1]:.2f}) and ({best[0]:.2f}, {best[1]:.2f}); "
+                f"not closed, contour dropped."
+            )
+    return warnings
 
 
 def _signed_area(ring: Sequence[Point]) -> float:
