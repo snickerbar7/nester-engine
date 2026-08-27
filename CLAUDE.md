@@ -38,6 +38,15 @@ bearings, and the round found ten real defects.
 Corollary: a big context is not a reason to reach for a big model — it is a
 reason to summarise with a small one first.
 
+**Say the model out loud, every time.** Every dispatch — subagent or workflow —
+is announced to Marlon in one sentence naming the model and why that grade fits
+the work ("Dispatched to Sonnet, not Opus — the thinking was already done by
+the canvas round, so this is execution against an exact changelog"). For a
+workflow, name the grade of each phase. This is not ceremony: the model choice
+is a cost and quality decision he is entitled to see and to overrule BEFORE the
+tokens are spent, and an unannounced Opus doing discovery is exactly the waste
+this section exists to prevent.
+
 Then **this session audits every agent's output** — read the diff, run the
 gates, decide whether it's actually right. An agent's report is input, not a
 verdict. (Real example: on the E15/E16/E8 round the test agent surfaced three
