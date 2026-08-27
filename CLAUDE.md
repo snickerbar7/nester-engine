@@ -317,12 +317,36 @@ DXF files ──▶ extract contours ──▶ (one material/  ──▶ nest on
   >   dropped, and comes back as a warning **naming the gap** ("0.50 mm gap
   >   between (0.00, 0.00) and (0.00, 0.50)"). Same wall clock as the old greedy
   >   walk (2400 chains: 0.65 s vs 0.71 s).
+  > - **Butted parts (a shared EDGE, not just a corner).** Each part is drawn
+  >   with its own copy of the wall they share, so that wall exists **twice**,
+  >   and two coincident half-edges leave a node at the IDENTICAL angle — the
+  >   angular order there is ambiguous and the traversal collapsed into the
+  >   union's outer boundary: three butted 40×40 squares came back as **one part
+  >   of 4800 mm²**. Exactly-coincident chains are now dropped to one copy
+  >   (`COINCIDENT_TOL` = 1e-6 mm, deliberately NOT the stitch tolerance), and
+  >   the wall becomes what it physically is — the edge two faces share.
+  >   3 butted squares → 3 parts of 1600. Same for a segment drawn twice.
+  >
+  > **The one ambiguity that is named, not fixed.** Parts drawn a HAIR apart
+  > *side by side* (0.03 mm, inside `DEFAULT_STITCH_TOL` = 0.05) still weld into
+  > one blob. That tolerance exists to close the small gaps CAD leaves **inside
+  > one outline**, and nothing in the file distinguishes that from two parts
+  > sitting 0.03 mm from each other — tightening it would start breaking the
+  > real exports this reader is validated against. Known-or-loud applies
+  > instead: the reader **says what it welded** — *"welded 2 junction(s) where
+  > 4+ contour ends met but were up to 0.030 mm apart … the part count is
+  > short; check it against the drawing"* — so a short part count is visible
+  > rather than silent. Only **junctions** (four or more ends meeting across a
+  > real distance) are reported; two ends meeting across a small gap is one
+  > outline being closed, which is what the tolerance is for, and stays silent.
   >
   > All 17 real DXFs in the repo (270 parts) read byte-identically before and
   > after. Pinned by `tests/test_dxf_property.py`: **P2** loop isolation over
   > separations {shared vertex, 0.01, 0.03, 0.05, 0.2, 5.0} with a shuffled edge
-  > pool, **P9** closure-or-diagnostic, **P7** units known-or-loud against a
-  > spec table written independently of the code.
+  > pool, **P2b** butted parts + duplicate coincident segments, and the
+  > sub-tolerance side-by-side case asserted to be *separate parts or an audible
+  > weld, never silence*, **P9** closure-or-diagnostic, **P7** units
+  > known-or-loud against a spec table written independently of the code.
 - **Engine**: `spyrrow` (Rust `sparrow`/`jagua-rs`, MIT) — best-yield irregular
   nesting with real rotation. It solves **strip packing**; we wrap it in a greedy
   **multi-sheet** loop (fixed strip height = sheet height, harvest the block that

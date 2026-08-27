@@ -75,6 +75,9 @@ _DROP_LAYERS = {"bend", "bend_extent"}
 DEFAULT_SAGITTA = 0.1
 # Endpoint-match tolerance for stitching open segments into loops, mm.
 DEFAULT_STITCH_TOL = 0.05
+# Coincidence tolerance for dropping a chain drawn twice in the same place, mm.
+# Deliberately far tighter than DEFAULT_STITCH_TOL — see _drop_coincident.
+COINCIDENT_TOL = 1e-6
 
 
 class DxfReadError(ValueError):
@@ -285,10 +288,20 @@ def _stitch(chains: List[List[Point]], tol: float) -> Tuple[List[List[Point]], L
     if not chains:
         return [], []
 
+    # 0. Drop coincident duplicate chains. Two parts BUTTED along a shared edge
+    # are each drawn with their own copy of that edge, so the wall between them
+    # exists twice. Two coincident half-edges leave a node at the IDENTICAL
+    # angle, which makes the angular order around that node ambiguous and
+    # collapses the traversal into the union's outer boundary — the butted parts
+    # came back as one blob. Kept once, the wall is simply the edge those two
+    # faces share, which is what it physically is.
+    chains = _drop_coincident(chains, COINCIDENT_TOL)
+
     # 1. Cluster chain endpoints into nodes (union by proximity, tol-only).
     endpoints = [c[0] for c in chains] + [c[-1] for c in chains]
     node_of: List[int] = [-1] * len(endpoints)
     node_points: List[Point] = []
+    node_members: List[List[Point]] = []
     for i, p in enumerate(endpoints):
         found = None
         for nid, rep in enumerate(node_points):
@@ -298,6 +311,8 @@ def _stitch(chains: List[List[Point]], tol: float) -> Tuple[List[List[Point]], L
         if found is None:
             found = len(node_points)
             node_points.append(p)
+            node_members.append([])
+        node_members[found].append(p)
         node_of[i] = found
     n = len(chains)
 
@@ -384,6 +399,7 @@ def _stitch(chains: List[List[Point]], tol: float) -> Tuple[List[List[Point]], L
             rings.append(_oriented(ring, ccw=True))
 
     warnings = _dangling_warnings(chains, node_of, n)
+    warnings += _weld_warnings(node_members)
     if ambiguous:
         warnings.append(
             f"has {ambiguous} contour(s) that could not be traced into a face "
@@ -391,6 +407,79 @@ def _stitch(chains: List[List[Point]], tol: float) -> Tuple[List[List[Point]], L
             f"guessed."
         )
     return rings, warnings
+
+
+def _drop_coincident(chains: List[List[Point]], tol: float) -> List[List[Point]]:
+    """Keep one copy of each chain; a chain drawn twice at the same place (in
+    either direction) is a duplicate, not a second wall.
+
+    The match is EXACT (``COINCIDENT_TOL``, a nanometre), deliberately not the
+    stitch tolerance: butted parts carry byte-identical copies of the edge they
+    share, whereas two walls a few hundredths apart are two real walls and
+    dropping one of those would silently move material. Nothing is assumed
+    about the geometry here, so no warning is owed.
+    """
+    kept: List[List[Point]] = []
+    seen: dict = {}
+    q = max(tol, 1e-9)
+    for c in chains:
+        # Bucket by the unordered endpoint pair so the comparison stays cheap.
+        a = (round(c[0][0] / q), round(c[0][1] / q))
+        b = (round(c[-1][0] / q), round(c[-1][1] / q))
+        key = (a, b) if a <= b else (b, a)
+        dup = False
+        for other in seen.get(key, ()):
+            if _same_chain(c, other, tol):
+                dup = True
+                break
+        if dup:
+            continue
+        seen.setdefault(key, []).append(c)
+        kept.append(c)
+    return kept
+
+
+def _same_chain(a: List[Point], b: List[Point], tol: float) -> bool:
+    if len(a) != len(b):
+        return False
+    if all(_near(p, q, tol) for p, q in zip(a, b)):
+        return True
+    return all(_near(p, q, tol) for p, q in zip(a, reversed(b)))
+
+
+def _weld_warnings(node_members: List[List[Point]]) -> List[str]:
+    """Name the sub-tolerance WELDS — the genuine ambiguity, made audible.
+
+    ``stitch_tol`` exists to close the small gaps CAD leaves inside ONE outline,
+    and it cannot tell that apart from two distinct parts drawn a hair away from
+    each other. That is a real ambiguity, not an oversight, and tightening the
+    tolerance would break the real exports this reader is validated against. So
+    the reader says what it did instead of staying silent.
+
+    Only JUNCTIONS are reported: a node where four or more chain-ends meet AND
+    the points that landed there were not actually coincident. Two ends meeting
+    across a small gap is one outline being closed — exactly what the tolerance
+    is for, and silent. Four ends meeting across a gap is two loops being welded
+    together, which is where a part count can quietly go short.
+    """
+    welds = []
+    for pts in node_members:
+        if len(pts) < 4:
+            continue
+        rep = pts[0]
+        d = max(math.hypot(p[0] - rep[0], p[1] - rep[1]) for p in pts)
+        if d > 1e-9:
+            welds.append((d, rep))
+    if not welds:
+        return []
+    worst = max(welds)[0]
+    where = ", ".join(f"({p[0]:.2f}, {p[1]:.2f})" for _d, p in sorted(welds)[:3])
+    return [
+        f"welded {len(welds)} junction(s) where 4+ contour ends met but were up "
+        f"to {worst:.3f} mm apart (stitch tolerance) — at {where}. If those were "
+        f"meant to be SEPARATE parts, they are now joined and the part count is "
+        f"short; check it against the drawing."
+    ]
 
 
 def _dangling_warnings(
