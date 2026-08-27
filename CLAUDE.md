@@ -517,6 +517,53 @@ format — UTF-8 collapses multibyte chars like `ñ` and shifts every column), a
 the Global **delimiter parser** only accepts single-char Hollerith (`1Hx`), not
 product-id fields like `7Hunknown`.
 
+> **Known-or-loud (E25) — the reader never assumes.** The doctrine of this
+> round: *a reader that cannot be certain must FAIL LOUDLY or WARN BY NAME, and
+> must never quietly assume.* A silent guess at the INPUT is the worst place for
+> one, because everything downstream then looks perfectly plausible. Three
+> measured guesses were removed.
+>
+> - **Units.** `_UNIT_TO_MM` now matches IGES 5.3: 1 in · 2 mm · 4 ft ·
+>   **5 miles = 1609344** · 6 m · **7 km = 1e6** · **8 mils = 0.0254** ·
+>   **9 microns = 0.001** · **10 cm = 10** · **11 microinches = 2.54e-5**. Five
+>   of those were wrong or missing, and `.get(flag, 1.0)` quietly made an
+>   unknown flag mean millimetres — a plan wrong by up to 304800x with no
+>   warning. An unmapped flag now raises `IgesParseError` **naming the flag**.
+>   Flag **3** ("the unit is NAMED in Global parameter 15") resolves that name
+>   against the same factors and refuses a name it doesn't know.
+> - **Hollerith.** IGES strings are COUNTED (`nH` + n **bytes**), not quoted, so
+>   an ordinary Mexican sender id — `19HACME, S.A. de C.V.` — legitimately holds
+>   the field delimiter. Splitting on the delimiter shifted every field: index
+>   13 landed on a float, `int()` raised, and the silent `except ValueError`
+>   fell back to mm. Measured: a 100-**inch** line parsed as `unit_flag=2,
+>   cut_length=100.0` — **25.4x short on every cut, from a valid file**. The
+>   Global section is now parsed Hollerith-aware, and there is no mm fallback:
+>   an undeterminable unit flag raises.
+> - **Unhandled entities.** The "recognized no point-bearing geometry" guard
+>   only fired when NO entity yielded points — the classic guard that can only
+>   fire when nothing else does. Put the real 3000 mm run in a type-106 Copious
+>   Data and a 100 mm detail in a 110 Line and the answer was `cut_length=100.0`
+>   with no warning: **a 3 m part cut at 100 mm and reported as fact.** Types
+>   are now classified in three buckets. *Handled* — read. *Known
+>   geometry-free* — B-rep topology (504/508/510/514/186), reference-defined
+>   surfaces (128/190/192/144…), annotation, colour, associativity: silent **on
+>   purpose**, because every real Fusion export is full of them and naming them
+>   would drown the signal. *Everything else* — surfaced **by name**: an
+>   outright refusal when the type's Parameter Data literally IS a coordinate
+>   list we cannot read (**104 · 106 · 112 · 114** — evidence geometry was
+>   lost), otherwise a **note** naming the types. Notes reach the CLI (`~` on
+>   stderr) and the service as **`notes[]`**, never `warnings[]` — that channel
+>   means "an artifact could not be produced" and Harriet's frozen `/nest`
+>   reads it. Every one of the 17 real IGES files in the repo still parses
+>   byte-identically, with zero notes.
+> - Geometry that extracts to **zero length** is a named parse error (a clean
+>   per-file error row), not a bare `ValueError` traceback out of the model.
+>
+> Pinned by `tests/test_iges_property.py`: **P4** unit-table completeness
+> against a spec table written independently of the code, **P5** Global-section
+> fuzz over an alphabet containing `,` `;` `H` and latin-1 accents, **P6**
+> unrecognized entities are never silent.
+
 If a file contains geometry types not in the list above, `read_tube` raises and
 **names the entity types it saw** — run `/add-parser-support`. Always
 sanity-check the first run's lengths against known part lengths (and the BOM if
