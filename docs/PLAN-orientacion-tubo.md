@@ -1,128 +1,96 @@
 # Plan — orientación angular de piezas de tubo (caras 1–4)
 
-**Estado:** propuesta, sin empezar. Escrito 2026-08-30.
-**Origen:** Marlon quiere que el taller pueda girar cada pieza entre las 4 caras
-del perfil, que eso **cambie el anidado**, y (fase 2) que la IA lea el 3D para
-proponer la orientación.
+**Estado:** definido, sin empezar. Escrito 2026-08-30, corregido el mismo día.
+**Qué es:** darle al taller **control** sobre cómo queda cada pieza girada en el
+tubo. No es un optimizador.
 
 ---
 
-## 1 · Qué es verdad hoy, antes de diseñar nada
+## 1 · El requisito, en una línea
 
-- **La costura no está en el CAD.** Un tubo modelado en Fusion es ideal: cuatro
-  caras, sin cordón de soldadura. La posición angular de la costura es una
-  propiedad del tramo físico que el taller saca del rack, y nadie la sabe hasta
-  que la ve. El software **no puede detectarla, sólo instruir** dónde debe
-  quedar — o, como pidió Marlon, dejar que el usuario la **simule** en la UI
-  para decidir con ella a la vista.
-- **Un tramo tiene UNA costura.** Todas las piezas cortadas de ese tramo la
-  heredan en la misma posición angular. `CLAUDE.md:283` ya lo dice para el
-  exportador de sólidos: *"un solo tubo de stock sólo se puede sujetar de una
-  manera"*.
-- **Hoy una pieza de tubo es un ESCALAR.** `nester/tube/iges.py` toma el eje más
-  largo del encajonado y descarta el resto. No hay sección, no hay perfil de
-  extremo, no hay posición de barrenos. `nester/tube/model.py` no tiene ningún
-  campo de rotación, orientación ni cara. **El solver no tiene nada que girar.**
-- Por lo tanto: girar una pieza **no cambia el anidado actual** — largo es
-  largo. Para que cambie, el motor tiene que aprender geometría que hoy tira a
-  la basura. Esa es la parte cara de esto, y hay que decidirla con los ojos
-  abiertos.
+El taller decide la orientación angular de **cada pieza**, pieza por pieza o
+diciéndoselo a Harriet, y puede además pedir **separación extra** entre piezas.
+Es **opcional** y **no persigue ahorrar material**: si alguien quiere las
+lengüetas todas en la misma cara —porque ahí está la costura, o porque le da la
+gana— el plan lo obedece aunque gaste más tramo.
+
+> *"la prioridad no es ahorrar espacio, es dejar que el usuario haga lo que
+> quiera en el espacio 3D del tubo. Le damos el control y la IA ejecuta."*
+
+La máquina **no importa**: si es sierra, el operador suelta la mordaza y gira.
+No hay que modelar sujeción, ni sierra vs láser, ni particionar barras.
 
 ---
 
-## 2 · LA PREGUNTA QUE BLOQUEA TODO (responder antes de construir)
+## 2 · Lo que esto SÍ y NO cambia (leer antes de codear)
 
-Marlon: *"dos tubos con insertos (macho) en los extremos, en caras 1 y 3. Girar
-uno 90° para que queden en los lados y en el otro arriba y abajo — así ganamos
-espacio."*
-
-Entiendo el resultado (se gana largo de tramo) pero **no cuál es el mecanismo
-físico**, y el mecanismo decide qué hay que modelar. Los candidatos:
-
-- [ ] **(a) Separación mínima entre features.** El láser no puede cortar dos
-      barrenos/ranuras demasiado cerca entre piezas vecinas; si las features de
-      la pieza A y de la B caen en la misma cara y muy juntas, hace falta dejar
-      material extra. Girando 90° una de las dos, caen en caras distintas y las
-      piezas se acercan. → hay que modelar **posición longitudinal + cara de
-      cada feature**, y la separación pasa a depender del PAR de piezas vecinas.
-- [ ] **(b) Perfiles de extremo que embonan.** Los extremos no son cuadrados
-      (inglete, boca de pescado, destaje). Dos extremos complementarios se
-      pueden encimar o compartir corte según la rotación relativa. → hay que
-      modelar el **perfil 3D del extremo**; es territorio de CAM de tubo real
-      (Lantek Flex3d, TRUMPF).
-- [ ] **(c) La costura es la restricción.** No se corta una feature encima del
-      cordón (queda feo y es más débil). Como la costura del tramo es fija, las
-      rotaciones permitidas de cada pieza se acoplan entre sí y el anidado se
-      **particiona** por orientación.
-- [ ] **(d) Otra cosa.** Marlon dibuja el caso y lo modelamos con eso.
-
-**Sin esta respuesta no se empieza.** (a) y (c) son mucho más baratas que (b).
-El segundo caso que mencionó —"otro usuario las quiere en las mismas caras, con
-un split de material de desperdicio entre ellas"— dice que la orientación
-también es una **preferencia del taller**, no sólo una optimización: la UI tiene
-que permitir forzarla aunque cueste material.
+- **Girar una pieza NO cambia el anidado.** Largo es largo; el empaque 1D no se
+  entera. Cambia el **dibujo**, el **sólido exportado** y la **instrucción** del
+  plan — no el conteo de tramos. **No dispares un re-anidado al girar.**
+- **La separación extra SÍ cambia el anidado.** Sale de la misma bolsa que el
+  largo útil, así que FFD la absorbe sin tocar el solver: es
+  `largo + kerf + separación_extra`. Eso sí marca el trabajo como sucio y pide
+  "volver a anidar", igual que cambiar el kerf.
+- **La costura no está en el CAD y no hace falta que esté.** Es del tramo
+  físico, la ve el operador. Lo único que damos es una forma de **simularla** en
+  la UI para decidir con ella a la vista, y de imprimir la instrucción.
+- **`solid_nest.py` hoy NORMALIZA la rotación** (`CLAUDE.md:283`, "todas las
+  piezas comparten una orientación") — hay que **respetar** la elegida en vez de
+  normalizarla. Es el único sitio donde el cambio quita comportamiento actual.
 
 ---
 
-## 3 · Fases
+## 3 · Checklist
 
-### Fase 0 — decidir (no escribir código)
-- [ ] Responder §2 con un dibujo o un archivo real.
-- [ ] ¿En qué máquina importa? **Sierra con mordaza fija** = una orientación por
-      tramo, restricción real de anidado. **Láser de tubo con eje rotatorio** =
-      la máquina gira el stock por corte y la restricción desaparece.
-- [ ] ¿El taller ya manda archivos con features, o hoy sólo manda tubo recto?
-      Si es lo segundo, esto es una apuesta a un cliente que todavía no existe.
+### Motor (este repo)
+- [ ] `Part.orientation_deg: float = 0.0` en `nester/tube/model.py`. 0 = como
+      vino del CAD. Rectangular: 0/90/180/270. Redondo: cualquier ángulo (no
+      cambia nada geométricamente, pero la costura y las features sí giran).
+- [ ] `Part.extra_gap_mm: float = 0.0` — separación extra **después** de esa
+      pieza. Se suma al largo que consume; el solver no cambia.
+- [ ] Validar: `extra_gap_mm >= 0`; ángulo normalizado a [0,360).
+- [ ] `Placement` los propaga al resultado para que el plan y el visor los vean.
+- [ ] CLI: `--orient FILENAME=DEG` y `--extra-gap FILENAME=MM` (repetibles, como
+      `--sets`).
+- [ ] `/v1` FileRef: `orientation_deg` y `extra_gap_mm`, opcionales, aditivos.
+      **El contrato congelado de Harriet no los lleva** — verificar con
+      `tests/test_service_contract.py`.
+- [ ] `nester/tube/report.py`: cada pieza dice su giro en la lista de cortes y
+      en la etiqueta; el dibujo del tramo marca la cara. La separación extra se
+      dibuja distinto de la merma — es intencional, no desperdicio.
+- [ ] `nester/tube/iges_nest.py` + `solid_nest.py`: girar la sección alrededor
+      del eje X por pieza. **Quitar la normalización**, o dejarla sólo como
+      default cuando nadie pidió orientación.
+- [ ] Tests: la orientación viaja íntegra archivo → JSON → PDF → IGES/STEP;
+      girar no mueve el conteo de tramos; `extra_gap` sí lo mueve y nunca
+      desborda una barra; conservación de piezas con ambos.
 
-### Fase 1 — orientación como dato, sin leer 3D
-Entrega valor sin tocar el solver ni el lector de IGES.
-- [ ] `Part` gana `orientation_deg` (0/90/180/270; 0 = como vino del CAD).
-- [ ] `--orient FILENAME=DEG` en el CLI y `orientation_deg` en el `FileRef` de
-      `/v1` (aditivo; el contrato congelado de Harriet no lo lleva).
-- [ ] El plan de corte imprime la instrucción por tramo y por pieza:
-      *"sujeta el tramo con la costura hacia atrás; P-03 gira 90°"*.
-- [ ] El visor 3D / `solid_nest.py` dibuja la pieza girada — hoy **normaliza** la
-      rotación (`CLAUDE.md:283`), habría que respetar la elegida.
-- [ ] Simulador de costura en la UI: el usuario marca en qué cara la imagina y
-      la app se lo pinta. **No es un dato del archivo, es una nota del taller.**
-- [ ] Tests: la orientación viaja íntegra archivo → plan → PDF → IGES.
+### Web / IA (repo harriet-nester)
+- [ ] `orientation_deg` y `extra_gap_mm` en el tipo de pieza y en el cuerpo que
+      se manda al motor.
+- [ ] Harriet los sabe poner por conversación: *"gira la P-03 90 grados"*,
+      *"todas con la lengüeta hacia arriba"*, *"déjame 20 mm entre la 4 y la 5"*.
+      Herramienta nueva, no un parámetro de trabajo.
+- [ ] El **visor 3D** dibuja la pieza girada — es donde el taller verifica.
+- [ ] Girar → sólo redibuja. Cambiar separación → marca sucio y ofrece
+      "volver a anidar".
 
-### Fase 2 — que la orientación CAMBIE el anidado
-Aquí está el trabajo de verdad, y depende de §2.
-- [ ] Modelar lo mínimo que exige el mecanismo elegido (features con cara y
-      posición, o perfil de extremo).
-- [ ] Extender el lector: hoy `read_tube` tira todo menos el largo.
-- [ ] El solver deja de empacar escalares. Con (a) o (b) la separación depende
-      del **par** de piezas vecinas → deja de ser FFD puro y pasa a ser un
-      empaque **dependiente de la secuencia**. Medir antes de prometer.
-- [ ] Con (c): particionar barras por orientación, como ya se agrupa por perfil.
-      Esto **puede subir el conteo de tramos** — hay que reportarlo honestamente,
-      igual que la regla de decline de retazos.
-- [ ] Property tests: ninguna pieza se pierde ni se duplica al girar; ninguna
-      barra se desborda; girar nunca empeora el conteo salvo cuando el taller lo
-      forzó a propósito.
-
-### Fase 3 — la IA propone la orientación leyendo el 3D
-- [ ] **Entrada nueva: el ENSAMBLE.** Hoy el pipeline recibe una pieza por
-      archivo; "qué cara se ve" no existe para un miembro suelto.
-- [ ] Leer STEP/OBJ: ya hay OpenCASCADE en `.venv-cad` (`solid_nest.py`).
-- [ ] Calcular **exposición** por cara (oclusión con los otros miembros), no
-      "verla". Renderizar una imagen y que un modelo de visión juzgue es
-      demasiado frágil para algo que decide un corte.
-- [ ] "Oculta" es un juicio, no una medición: en un barandal es el lado de abajo
-      y el del muro. O una regla declarada, o Harriet pregunta una vez cuál es
-      el lado público.
-- [ ] Harriet **propone**, el taller **sobreescribe**. Nunca al revés.
+### Diseño (Claude Design, lo corre Marlon)
+- [ ] Brief: control de rotación por pieza en el visor 3D (4 caras en
+      rectangular, continuo en redondo), **simulador de costura** que el usuario
+      coloca donde se la imagina, y control de separación extra.
+- [ ] Que la UI deje **forzar** una orientación que gasta más material sin pelear
+      con el usuario — es el caso de uso principal, no un error.
 
 ---
 
-## 4 · Riesgos y decisiones tomadas
-- **Girar no es gratis en el conteo.** Si la orientación se vuelve restricción,
-  puede hacer falta más tramo. Se reporta medido, nunca se esconde — misma
-  doctrina que E24.
-- **No hacer esto por vision.** La geometría decide; la IA comunica.
-- **La UI va por Claude Design.** De este repo sale el contrato del motor y el
-  brief; el lienzo lo corre Marlon (`/design-round`).
-- **Puede que no aplique todavía.** Si los talleres mandan tubo recto sin
-  features, la fase 2 no tiene a quién servirle. La fase 1 sí: instruir la
-  sujeción es útil desde el primer trabajo.
+## 4 · Fuera de alcance (a propósito)
+- **Optimizar la rotación.** No buscamos la orientación que ahorra tramo. Si algún
+  día se quiere, es otra conversación y otro solver.
+- **Leer el 3D para proponer orientación.** La IA ejecuta lo que el taller pide.
+  Proponer desde el ensamble (oclusión, qué cara se ve) queda anotado como idea
+  futura: necesitaría el **ensamble** como entrada nueva, no una pieza por
+  archivo, y OpenCASCADE ya está en `.venv-cad` si algún día se hace.
+- **Features de tubo en 3D** (barrenos, destajes, ingletes). El motor sigue
+  cortando largos rectos. La orientación es un dato que el taller declara, no
+  algo que el motor deduzca de la geometría.
