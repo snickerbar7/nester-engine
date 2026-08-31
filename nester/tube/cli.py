@@ -19,7 +19,7 @@ import threading
 from typing import Dict, List
 
 from .iges import IgesParseError, check_straight, read_tube
-from .model import ExtraStock, Part, ProfileResult, StockSpec
+from .model import EndFeature, ExtraStock, Part, ProfileResult, StockSpec, gap_story_es
 from .packing import pack_all
 from .profile import (
     DEFAULT_PROFILE_REGEX,
@@ -59,7 +59,12 @@ def main(argv: List[str] | None = None) -> int:
         if not any(os.path.basename(p) == name or p == name for p in paths):
             print(f"  ! --sets for '{name}' ignored: no such file in this job",
                   file=sys.stderr)
-    parts, errors, cross_sections = _load_parts(paths, args.profile_regex, qty_regex, sets)
+    orient = parse_orient(getattr(args, "orient", []))
+    extra_gap = parse_extra_gap(getattr(args, "extra_gap", []))
+    end_features = parse_end_features(getattr(args, "end_feature", []))
+    parts, errors, cross_sections = _load_parts(
+        paths, args.profile_regex, qty_regex, sets,
+        orient=orient, extra_gap=extra_gap, end_features=end_features)
     for e in errors:
         print(f"  ! {e}", file=sys.stderr)
     # Entity types the IGES reader could not account for (E25): the length it
@@ -210,6 +215,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sets", action="append", default=[], metavar="FILENAME=N",
                    help="juegos: multiply that file's quantity by N (repeatable). "
                         "'PIEZA_2pz.igs=50' -> 2 x 50 = 100 pieces to cut.")
+    p.add_argument("--orient", action="append", default=[], metavar="FILE=DEG",
+                   help="how this file's piece is clocked in the tube, in degrees "
+                        "(repeatable). Rotates which faces its end features "
+                        "occupy — see --end-feature. Changes the nest.")
+    p.add_argument("--extra-gap", action="append", default=[], metavar="FILE=MM",
+                   help="extra space the shop wants AFTER this piece, on top of "
+                        "kerf/features (repeatable, MM >= 0).")
+    p.add_argument("--end-feature", action="append", default=[],
+                   metavar="FILE=END:PROTRUSION_MM:FACES",
+                   help="a protrusion (e.g. a welded tongue) at one end of this "
+                        "piece (repeatable — once per end). END is 'start' or "
+                        "'far'; FACES is a comma-separated list of 1-4. "
+                        "'bracket.igs=far:6:1,3' -> a 6 mm tongue on faces 1 and "
+                        "3 at the far end.")
     p.add_argument("--json", action="store_true", help="emit machine-readable JSON to stdout")
     p.add_argument("--out", metavar="DIR",
                    help="write the cut-plan PDF + JSON into DIR/<job-name>/")
@@ -260,12 +279,22 @@ def _load_parts(
     profile_regex: str,
     qty_regex: str | None,
     sets: Dict[str, int] | None = None,
+    *,
+    orient: Dict[str, float] | None = None,
+    extra_gap: Dict[str, float] | None = None,
+    end_features: Dict[str, Dict[str, EndFeature]] | None = None,
 ) -> tuple[List[Part], List[str], Dict[str, tuple]]:
     """Read every file into Part copies.
 
     ``sets`` is the juegos multiplier per file (keyed by path or basename): the
     file contributes ``qty_from_name x sets`` copies, so demand — and therefore
     the bars to buy — scales before the solver ever runs.
+
+    ``orient`` / ``extra_gap`` / ``end_features`` are the other per-file shop
+    declarations (docs/PLAN-orientacion-tubo.md §A), keyed the same way as
+    ``sets``. All three default to nothing declared, which is every job that
+    existed before this: every copy of a file then gets a plain Part exactly
+    like before, and the nest is untouched.
     """
     parts: List[Part] = []
     errors: List[str] = []
@@ -294,13 +323,19 @@ def _load_parts(
         # means "an artifact could not be produced" on the frozen contract.
         notes += [f"{name}: {n.split(': ', 1)[-1]}" for n in geo.notes]
         _from_name, _sets, qty = resolve_qty(path, qty_regex, sets)
+        deg = _lookup(orient, path, 0.0)
+        gap_mm = _lookup(extra_gap, path, 0.0)
+        features = _lookup(end_features, path, None) or {}
         try:
             if qty == 1:
-                parts.append(Part(name=name, profile=profile, length=geo.cut_length))
+                parts.append(Part(name=name, profile=profile, length=geo.cut_length,
+                                  orientation_deg=deg, extra_gap_mm=gap_mm,
+                                  end_features=features))
             else:
                 for i in range(1, qty + 1):
                     parts.append(Part(name=f"{name} #{i}/{qty}", profile=profile,
-                                      length=geo.cut_length))
+                                      length=geo.cut_length, orientation_deg=deg,
+                                      extra_gap_mm=gap_mm, end_features=features))
         except ValueError as e:
             # A non-positive length (degenerate geometry) is a per-file error
             # row, not an unhandled traceback out of the model layer.
@@ -349,6 +384,94 @@ def parse_sets(items: List[str]) -> Dict[str, int]:
         return parse_sets_args(items)
     except ValueError as e:
         raise SystemExit(str(e))
+
+
+def _lookup(mapping, path: str, default):
+    """Look up a per-file value by full path first, else by basename — the
+    same key a shop actually typed on --orient/--extra-gap/--end-feature,
+    mirroring nester.tube.profile.sets_for_path."""
+    if not mapping:
+        return default
+    if path in mapping:
+        return mapping[path]
+    return mapping.get(os.path.basename(path), default)
+
+
+def parse_orient(items: List[str]) -> Dict[str, float]:
+    """--orient FILE=DEG -> {filename: degrees}."""
+    out: Dict[str, float] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise SystemExit(f"--orient expects FILE=DEG, got '{item}'")
+        key, val = item.rsplit("=", 1)
+        name = key.strip()
+        if not name:
+            raise SystemExit(f"--orient expects FILE=DEG, got '{item}'")
+        try:
+            out[name] = float(val.strip())
+        except ValueError:
+            raise SystemExit(f"--orient {name}: DEG must be a number, got '{val}'")
+    return out
+
+
+def parse_extra_gap(items: List[str]) -> Dict[str, float]:
+    """--extra-gap FILE=MM -> {filename: mm}. MM must be >= 0."""
+    out: Dict[str, float] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise SystemExit(f"--extra-gap expects FILE=MM, got '{item}'")
+        key, val = item.rsplit("=", 1)
+        name = key.strip()
+        if not name:
+            raise SystemExit(f"--extra-gap expects FILE=MM, got '{item}'")
+        try:
+            mm = float(val.strip())
+        except ValueError:
+            raise SystemExit(f"--extra-gap {name}: MM must be a number, got '{val}'")
+        if mm < 0:
+            raise SystemExit(f"--extra-gap {name}: MM must be >= 0, got {mm:g}")
+        out[name] = mm
+    return out
+
+
+def parse_end_features(items: List[str]) -> Dict[str, Dict[str, EndFeature]]:
+    """--end-feature FILE=END:PROTRUSION_MM:FACES (repeatable, once per end).
+
+    'bracket.igs=far:6:1,3' -> a 6 mm tongue on faces 1 and 3 at the far end.
+    Two entries for the same file/end overwrite (last wins).
+    """
+    out: Dict[str, Dict[str, EndFeature]] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise SystemExit(
+                f"--end-feature expects FILE=END:PROTRUSION_MM:FACES, got '{item}'")
+        key, val = item.split("=", 1)
+        name = key.strip()
+        bits = val.split(":")
+        if not name or len(bits) != 3:
+            raise SystemExit(
+                f"--end-feature expects FILE=END:PROTRUSION_MM:FACES "
+                f"(FACES comma-separated, 1-4), got '{item}'")
+        end, protrusion_s, faces_s = (b.strip() for b in bits)
+        if end not in ("start", "far"):
+            raise SystemExit(f"--end-feature {name}: END must be 'start' or 'far', got '{end}'")
+        try:
+            protrusion = float(protrusion_s)
+        except ValueError:
+            raise SystemExit(
+                f"--end-feature {name}/{end}: PROTRUSION_MM must be a number, "
+                f"got '{protrusion_s}'")
+        try:
+            faces = tuple(int(f) for f in faces_s.split(",") if f.strip())
+        except ValueError:
+            raise SystemExit(
+                f"--end-feature {name}/{end}: FACES must be integers 1-4, got '{faces_s}'")
+        try:
+            feature = EndFeature(protrusion_mm=protrusion, faces=faces)
+        except ValueError as e:
+            raise SystemExit(f"--end-feature {name}/{end}: {e}")
+        out.setdefault(name, {})[end] = feature
+    return out
 
 
 def _parse_remnants(items: List[str]) -> Dict[str, List[ExtraStock]]:
@@ -437,7 +560,11 @@ def _as_dict(results: List[ProfileResult]) -> dict:
                         "waste": round(b.waste, 3),
                         "cuts": [
                             {"part": p.part.name, "length": p.part.length,
-                             "start": round(p.start, 3), "end": round(p.end, 3)}
+                             "start": round(p.start, 3), "end": round(p.end, 3),
+                             "orientation_deg": p.part.orientation_deg,
+                             "gap_before": round(p.gap_before, 3),
+                             "gap_reason": list(p.gap_reason),
+                             "gap_story": gap_story_es(p.gap_reason)}
                             for p in b.placements
                         ],
                     }

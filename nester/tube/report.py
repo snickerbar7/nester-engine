@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Dict, List, Tuple
 
-from .model import BarLayout, ProfileResult, StockSpec
+from .model import BarLayout, ProfileResult, StockSpec, gap_story_es
 
 # Lazy import of reportlab so JSON-only runs work without it installed.
 try:
@@ -443,7 +443,11 @@ def _as_dict(results: List[ProfileResult], job_name: str, meta: Dict, warnings: 
                         "waste": round(b.waste, 3),
                         "cuts": [
                             {"part": p.part.name, "length": p.part.length,
-                             "start": round(p.start, 3), "end": round(p.end, 3)}
+                             "start": round(p.start, 3), "end": round(p.end, 3),
+                             "orientation_deg": p.part.orientation_deg,
+                             "gap_before": round(p.gap_before, 3),
+                             "gap_reason": list(p.gap_reason),
+                             "gap_story": gap_story_es(p.gap_reason)}
                             for p in b.placements
                         ],
                     }
@@ -480,6 +484,10 @@ class _Cut:
     end: float
     folio: str
     desc: str
+    # Why the gap BEFORE this cut is what it is — '' for plain kerf (the
+    # overwhelming majority of cuts), else "caras compartidas: ..." etc. Never
+    # a bare number with no story (docs/PLAN-orientacion-tubo.md §B).
+    gap_story: str = ""
 
 
 @dataclass
@@ -522,7 +530,7 @@ def _build_plan(results: List[ProfileResult], L, job_tag: str):
                     bar_tag=tag, pos=i, piece=piece,
                     start=ft + p.start, end=ft + p.end,
                     folio=f"{job_tag}-{piece.pid.replace('-', '')}-{folio_seq[piece.pid]:02d}",
-                    desc=base))
+                    desc=base, gap_story=gap_story_es(p.gap_reason)))
             bars.append(_Bar(result=r, bar=b, label=_bar_label(L, b, nums),
                              tag=tag, cuts=cuts))
     return list(pieces.values()), bars
@@ -1489,7 +1497,8 @@ def _cut_column(c, L, rows, x, w, y, row_h=_ROW_H) -> float:
         bx += _COLS[2] + _GAP
         _rect(c, bx, ty - px(1), px(8), px(8), fill=ct.piece.color)
         _t(c, bx + px(13), ty, ct.piece.pid, MONO, px(10), INK)
-        _t(c, desc_x, ty, _ellipsize(c, ct.desc, SANS, px(10), desc_w),
+        desc_txt = f"{ct.desc} — {ct.gap_story}" if ct.gap_story else ct.desc
+        _t(c, desc_x, ty, _ellipsize(c, desc_txt, SANS, px(10), desc_w),
            SANS, px(10), MID)
         _t(c, x + w - pad - _ACC_W - _GAP, ty, _len1(ct.piece.length),
            MONO_B, px(11), INK, align="r")
