@@ -38,6 +38,52 @@ bearings, and the round found ten real defects.
 Corollary: a big context is not a reason to reach for a big model — it is a
 reason to summarise with a small one first.
 
+### Cuándo un workflow, y con qué forma
+
+Un **subagente** es para UN trabajo coherente. Un **workflow** es para una FORMA
+que se repite sobre N cosas, o para el patrón buscar → verificar → sintetizar.
+Si estás por lanzar tres subagentes con el mismo prompt cambiando una palabra,
+eso era un workflow.
+
+**La forma canónica, y es la del barrido E26:** haiku mapea en paralelo → opus
+decide sobre lo que haiku trajo → un opus sintetiza. El haiku nunca juzga; el
+opus nunca abre un archivo para orientarse.
+
+```js
+phase('Mapear')
+const out = await pipeline(AREAS,
+  a => agent(mapPrompt(a),    {phase:'Mapear',  model:'haiku', schema: FINDINGS}),
+  (map, a) => agent(judge(map), {phase:'Refutar', model:'opus', effort:'high', schema: VERDICT}),
+)
+```
+
+Reglas que valen tokens:
+
+- **`pipeline()` por default, `parallel()` sólo si de verdad hace falta la
+  barrera.** `parallel()` espera a TODAS antes de seguir; con `pipeline()` el
+  área que terminó de mapearse ya se está verificando mientras las otras siguen.
+  La barrera sólo se justifica si la etapa N necesita el conjunto COMPLETO de la
+  N−1 (deduplicar, cortar temprano si el total es cero). "Necesito aplanar la
+  lista" NO es una barrera: se hace dentro de una etapa.
+- **`schema` es lo que hace útil al modelo barato.** Con schema el haiku
+  devuelve datos validados, no prosa, y el opus los consume sin volver a leer
+  nada. Sin schema estás pagando para que alguien resuma mal.
+- **`model` y `effort` POR AGENTE.** Un workflow no tiene un modelo, tiene uno
+  por etapa. Mapear = haiku. Decidir/refutar = opus, `effort:'high'`. Ejecutar
+  algo ya decidido = sonnet. Anúncialos todos (ver abajo).
+- **Verificar EJECUTANDO, no razonando.** En E26 cada verificador tenía que
+  construir el caso y correr el motor; `ran_code` era campo obligatorio del
+  schema. Un hallazgo que nadie reprodujo es ruido, y el ruido en una auditoría
+  cuesta más que el silencio porque quema la confianza del que lee.
+- **Default a refutado** en trabajo de hallazgos. Que el agente tenga que
+  *probar* que algo está mal, no que suene mal.
+- **Los agentes NO empujan.** Igual que los subagentes: commitean, esta sesión
+  audita y sube.
+
+Costo real, para calibrar: el barrido E26 fueron 11 agentes, ~1.08M tokens de
+subagente, ~20 min de reloj, y encontró 10 defectos reales. Eso es lo que cuesta
+un barrido de motor completo; no lo lances para revisar tres archivos.
+
 **Say the model out loud, every time.** Every dispatch — subagent or workflow —
 is announced to Marlon in one sentence naming the model and why that grade fits
 the work ("Dispatched to Sonnet, not Opus — the thinking was already done by
