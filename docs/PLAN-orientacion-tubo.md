@@ -1,12 +1,16 @@
 # Plan — orientación angular de piezas de tubo (caras 1–4)
 
-**Estado:** §A y §B (motor + solver) HECHOS, 2026-08-30. §C (extractor
+**Estado:** §A y §B (motor + solver) HECHOS, 2026-08-30 — **y CORREGIDOS el
+mismo día**: la fórmula de §2 sumaba las lengüetas declaradas de cada pieza
+como si fuera un dato medido; no lo era, y se reemplazó por
+`StockSpec.shared_face_penalty_mm`, explícito y con default 0. §C (extractor
 OpenCASCADE), §D (declaración conversacional persistida), §E (web/IA) y §F
 (diseño) siguen sin empezar — fuera de alcance de esta ronda a propósito.
-(Tercera corrección de este documento — las dos primeras se equivocaron, la
+(Cuarta corrección de este documento — las tres primeras se equivocaron, la
 historia está en el git log de este archivo.)
 **Qué es:** el taller decide cómo queda girada cada pieza dentro del tubo, y el
-motor calcula la separación que esa decisión realmente exige.
+motor calcula la separación que esa decisión realmente exige — sin inventar
+ningún milímetro que nadie midió.
 
 ---
 
@@ -23,38 +27,72 @@ modelamos sujeción ni particionamos barras por orientación.
 
 ---
 
-## 2 · Qué cambia el anidado, y por qué (corregido)
+## 2 · Qué cambia el anidado, y por qué (corregido — dos veces)
 
 **La separación entre dos piezas vecinas depende de cómo estén giradas las dos.**
-Si las lengüetas de A y las de B caen en las **mismas caras**, chocan y el hueco
-tiene que crecer para librarlas. Giradas a caras **distintas**, se entrelazan y
-el hueco se encoge. Encima va lo que el usuario pida a mano.
+Si las lengüetas de A y las de B caen en las **mismas caras**, el motor las
+etiqueta `caras compartidas`; en caras **distintas**, `entrelazadas`. Eso es un
+**estado**, observable desde lo que el taller declaró. **Cuánto vale en
+milímetros que compartan cara NO lo es** — nadie lo ha medido — y ésa es la
+corrección de esta sección.
 
 Entonces el largo consumido deja de ser `largo + kerf` y pasa a ser
 `largo + separación(extremo de ésta, principio de la siguiente)`:
 
 ```
 separación(A→B) = kerf
-                + máx sobre las caras COMPARTIDAS f de (saliente_A[f] + saliente_B[f])
+                + StockSpec.shared_face_penalty_mm   (si comparten cara; si no, 0)
                 + extra_gap pedido por el usuario
 ```
 
 Sin caras compartidas el término del medio es 0 y las piezas se entrelazan.
-**Verificar esta fórmula contra una pieza real antes de construir sobre ella.**
+
+**Qué NO es `shared_face_penalty_mm` — la corrección.** La primera versión de
+esta fórmula no tenía ese término: sumaba `saliente_A + saliente_B`, el
+`protrusion_mm` que cada pieza ya trae declarado. Parecía razonable — el motor
+"ya sabía" cuánto sobresale cada lengüeta — pero nadie había verificado que la
+separación física real que necesitan dos lengüetas del mismo lado sea
+exactamente esa suma. Por separado, una ronda de diseño (para la pantalla del
+visor 3D) estimó **12.0 mm** para la misma situación física, y su propio texto
+la marcó como hipótesis, no como medición. Dos números inventados que ni
+siquiera concuerdan entre sí es la señal de que ninguno estaba fundamentado, y
+el peor lugar para un número no fundamentado es un plan de corte que el taller
+va a ejecutar con la sierra encendida.
+
+**La corrección:** `shared_face_penalty_mm` es una **constante explícita y
+configurable, con default 0** — un allowance de máquina, vive en `StockSpec`
+junto a `kerf`/`front_trim`/`back_trim`, no en la pieza, porque si el costo es
+real viene de la sierra o de la mordaza, no de la geometría. En 0 (el default),
+`separación(A→B) = kerf` **siempre**, sin importar qué orientación o
+`end_features` traigan las piezas — el motor no infiere nada de los
+`protrusion_mm` declarados. El taller lo sube (`--shared-face-penalty MM` /
+`shared_face_penalty_mm` en `/v1`) sólo cuando alguien mide el número real.
+
+**La etiqueta y el cargo son dos cosas separadas.** Un hueco puede seguir
+etiquetado `caras compartidas` (`Placement.gap_reason`) con cargo cero — el
+taller ve el estado, no un número inventado. Lo que el hueco **cobró** en mm
+vive aparte, en `Placement.gap_terms` (`kerf` siempre, más
+`shared_face_penalty`/`extra` sólo cuando de verdad sumaron), y es lo que
+`gap_story_es()` convierte en texto: `"ranura de corte (kerf) 3.0 mm · extra
+del taller +20.0 mm"`. Con el penalty en 0, un hueco `caras compartidas` no
+imprime línea — igual que un hueco de puro kerf, silencioso.
 
 Dos consecuencias:
-- **Girar SÍ cambia el anidado** (a través de la separación). Marca el trabajo
-  sucio y ofrece volver a anidar, igual que cambiar el kerf. *(Las dos versiones
-  anteriores de este plan decían lo contrario. Estaban mal.)*
+- **Girar PUEDE cambiar el anidado** (a través de la separación) — pero sólo
+  una vez que el taller fijó un `shared_face_penalty_mm` real o pidió
+  `extra_gap_mm`. En el default, girar cambia la etiqueta y el dibujo, nunca el
+  largo consumido. *(Las tres versiones anteriores de este plan se
+  equivocaron: primero dijeron que girar nunca cambia el anidado; luego, que
+  siempre lo cambia por una cifra que el motor mismo inventaba.)*
 - El solver deja de sumar una constante entre piezas. FFD sigue sirviendo —
   coloca igual, sólo que consultando la separación del **par**— pero el orden
   ahora afecta el total, así que FFD deja de ser óptimo. **Válido primero,
   óptimo después.**
 
 **Correctitud vs optimización — sólo lo primero es obligatorio:**
-1. **Obligatorio.** Dadas las orientaciones que el taller eligió, calcular la
-   separación correcta. Sin esto un plan con piezas giradas es *físicamente
-   falso*: dice que caben donde las lengüetas chocan.
+1. **Obligatorio.** Dadas las orientaciones que el taller eligió Y el
+   `shared_face_penalty_mm` que el taller fijó (default 0), calcular la
+   separación correcta — nunca una que el motor adivinó.
 2. **Opcional, después.** Buscar orientaciones que compren menos tramos. Siempre
    sobreescribible por el taller.
 
@@ -105,10 +143,13 @@ contra el cual validarse.
       Harriet (`service/harriet/`) no los lleva; pinneado en
       `tests/test_service_api.py::test_harriet_infile_never_carries_orientation_fields`.
 
-### B · Separación dependiente del par *(solver)* — HECHO 2026-08-30
-- [x] Función `clearance(prev, next, kerf)` en `nester/tube/packing.py` con la
-      fórmula de §2 (kerf incluido), más `_rotated_faces` para aplicar
-      `orientation_deg` a las caras declaradas antes de comparar.
+### B · Separación dependiente del par *(solver)* — HECHO 2026-08-30, CORREGIDO el mismo día
+- [x] Función `clearance(prev, next, kerf, shared_face_penalty_mm=0.0)` en
+      `nester/tube/packing.py` con la fórmula de §2 (kerf incluido), más
+      `_rotated_faces` para aplicar `orientation_deg` a las caras declaradas
+      antes de comparar. `shared_face_penalty_mm` es el parámetro corregido:
+      viene de `StockSpec`, no de sumar `protrusion_mm` de las piezas — ver la
+      entrada RESUELTO en §6.
 - [x] `nester/tube/packing.py::_pack`/`_append` la consultan por PAR en vez de
       sumar `kerf` fijo; `BarLayout.consumed_length` ahora deriva de la
       posición real de la última pieza colocada, no de una suma uniforme.
@@ -128,13 +169,30 @@ contra el cual validarse.
       cada corte. Comparación hecha con `git stash` (código viejo) vs. el
       working tree (código nuevo) sobre los 5 IGES de `samples/`, ver el
       mensaje del commit de esta ronda.
-- [x] El plan reporta la separación por hueco y **por qué** (`entrelazadas` /
-      `caras compartidas` / `extra del taller`), no un número mudo:
-      `Placement.gap_before` + `gap_reason` (constantes `GAP_*` en
-      `nester/tube/model.py`), `gap_story_es()` para el texto en español,
-      surfaceado en `<job>_corte.json` (`cuts[].gap_story`) y en la columna de
-      descripción de la hoja "Lista de cortes" del PDF (silencioso cuando no
-      hay historia que contar).
+- [x] El plan reporta la separación por hueco y **por qué**, no un número
+      mudo — y desde la corrección, separa dos cosas antes mezcladas:
+      `Placement.gap_reason` (constantes `GAP_*` en `nester/tube/model.py`) es
+      el ESTADO del hueco (`entrelazadas`/`caras compartidas`/`extra`), se
+      conserva aunque no cobre nada; `Placement.gap_terms` es el DESGLOSE de lo
+      que de verdad cobró (`kerf` siempre, `shared_face_penalty`/`extra` sólo
+      si sumaron mm reales). `gap_story_es()` ahora renderiza `gap_terms`, no
+      `gap_reason` — con el penalty en 0 un hueco `caras compartidas` no
+      imprime línea, silencioso igual que un kerf plano. Surfaceado en
+      `<job>_corte.json` (`cuts[].gap_before`/`gap_reason`/`gap_story`) y en la
+      columna de descripción de la hoja "Lista de cortes" del PDF.
+- [x] **Corrección (mismo día):** `StockSpec.shared_face_penalty_mm` (default
+      0, valida `>= 0`) reemplaza la suma de `protrusion_mm` que la fórmula
+      original usaba. CLI `--shared-face-penalty MM`; `/v1`
+      `NestRequest.shared_face_penalty_mm` (aditivo, default 0, ausente del
+      contrato congelado de Harriet — `tests/test_service_contract.py` verde).
+      Invariante reforzado: con el penalty en 0, el anidado es idéntico al de
+      antes de E26 **aunque las piezas SÍ traigan `end_features`/
+      `orientation_deg`** — pinneado en
+      `tests/test_tube_orientation.py::
+      test_zero_change_with_features_and_rotation_when_penalty_is_default` y,
+      end-to-end, diffeando `--json` sobre `samples/` con `--orient`/
+      `--end-feature` declarados en un archivo: sólo cambia el
+      `orientation_deg` de ese corte, ninguna barra ni posición se mueve.
 
 ### C · Extractor de extremos *(nuevo, OpenCASCADE, fuera de banda)*
 - [ ] Script propio bajo `.venv-cad`, invocado como `solid_nest.py`. **No entra
@@ -181,10 +239,20 @@ contra el cual validarse.
   parte). El extractor mira **los extremos**, que es lo que mueve la separación.
 
 ## 6 · Riesgos
-- **La fórmula de §2 es una hipótesis.** Sale de la descripción de Marlon, no de
-  una pieza medida. Validar antes de construir el solver encima.
+- **RESUELTO — la fórmula de §2 sumaba una hipótesis no medida (`saliente_A +
+  saliente_B`).** Corregido el mismo día: el término se volvió
+  `StockSpec.shared_face_penalty_mm`, explícito, con default 0 — el motor ya
+  no deriva ningún número de los `protrusion_mm` declarados. Ver §2. Sigue
+  pendiente que alguien MIDA el valor real de una colisión de lengüetas; hasta
+  entonces el default (0, sin cargo) es la respuesta honesta, no un placeholder
+  a corregir en silencio.
 - **`solid_nest.py` NORMALIZA la rotación hoy** (`CLAUDE.md:283`) — hay que
   respetar la elegida. Es lo único que este trabajo le quita al comportamiento
   actual.
-- **Girar puede subir el conteo de tramos.** Se reporta medido y sin esconderlo,
-  misma doctrina que la regla de decline de retazos (E24).
+- **Girar puede subir el conteo de tramos — pero SÓLO si el taller fijó
+  `shared_face_penalty_mm` o `extra_gap_mm`.** En el default (0) girar nunca
+  cambia el conteo, sólo la etiqueta y el dibujo — ver el invariante reforzado
+  en §2 y `tests/test_tube_orientation.py::
+  test_zero_change_with_features_and_rotation_when_penalty_is_default`. Cuando
+  sí sube, se reporta medido y sin esconderlo, misma doctrina que la regla de
+  decline de retazos (E24).

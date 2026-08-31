@@ -6,12 +6,18 @@ gives strong yield for workshop nesting. Good enough that the bottleneck is the
 saw, not the math.
 
 Each placed part consumes its own length plus the gap reserved AFTER it — the
-saw kerf, always, plus two things a piece may declare for itself
-(docs/PLAN-orientacion-tubo.md): a protruding end feature (a welded tongue,
-say) that collides with the next piece's feature on a SHARED face, and any
-extra gap the shop asks for by hand. With neither in play the gap is exactly
-``kerf`` for every part, byte-identical to the tool before this existed. See
-:func:`clearance`. This slightly over-reserves kerf on the last part of a bar
+saw kerf, always, plus two things that can add to it
+(docs/PLAN-orientacion-tubo.md §2): ``StockSpec.shared_face_penalty_mm``, a
+shop-set machine allowance charged when two neighbours' end features land on
+the SAME face after rotation, and any extra gap the shop asks for by hand
+(``Part.extra_gap_mm``). ``shared_face_penalty_mm`` defaults to 0 — it is not
+something the engine infers from the parts' declared protrusions, because
+nobody has measured how much room a real same-face collision needs (see
+:func:`clearance`'s docstring). With the penalty at 0 and no extra_gap_mm, the
+gap is exactly ``kerf`` for every part, byte-identical to the tool before
+orientation/end-features existed — REGARDLESS of whether the parts carry
+``end_features``/``orientation_deg``, since neither term the formula could add
+is ever invented. This slightly over-reserves kerf on the last part of a bar
 (nothing follows it, so its declared gap is never spent), which is the safe
 direction for a real saw.
 
@@ -89,7 +95,8 @@ def _rotated_faces(feature: EndFeature, orientation_deg: float) -> FrozenSet[int
     return frozenset(((f - 1 + shift) % 4) + 1 for f in feature.faces)
 
 
-def clearance(prev: Part, nxt: Part, kerf: float) -> Clearance:
+def clearance(prev: Part, nxt: Part, kerf: float,
+             shared_face_penalty_mm: float = 0.0) -> Clearance:
     """The gap reserved between ``prev``'s far end and ``nxt``'s start end.
 
     ``prev`` must already be placed — this is never called for the first
@@ -98,16 +105,27 @@ def clearance(prev: Part, nxt: Part, kerf: float) -> Clearance:
     cut). Implements the formula from docs/PLAN-orientacion-tubo.md §2::
 
         clearance(A->B) = kerf
-                         + max over SHARED faces f of (protrusion_A[f] + protrusion_B[f])
+                         + (shared_face_penalty_mm if the ends share a face, else 0)
                          + extra_gap requested by A
 
     "Shared" is evaluated AFTER each part's own ``orientation_deg`` is
-    applied. A part's ``EndFeature`` carries one protrusion value for every
-    face it names (a real tongue relieves the faces it's on uniformly), so the
-    "max over shared faces" collapses to a single sum once any face is shared.
+    applied.
 
-    With no end features and no ``extra_gap_mm`` this returns exactly
-    ``kerf`` — the behaviour before this function existed.
+    ``shared_face_penalty_mm`` is ``StockSpec``'s own explicit allowance
+    (default 0) — NOT a value derived from the parts' declared
+    ``EndFeature.protrusion_mm``. An earlier version of this function summed
+    the two protrusions instead, which put an invented number (never measured
+    against a real part) straight into the cut plan; a design round guessed a
+    DIFFERENT number (12.0 mm) for the same physical situation, and two
+    independent guesses disagreeing is exactly the signal that neither was
+    grounded. The shop decides the spacing; the engine does not invent it.
+
+    With ``shared_face_penalty_mm`` at 0 and no ``extra_gap_mm`` this returns
+    exactly ``kerf`` — REGARDLESS of whether ``prev``/``nxt`` carry
+    ``end_features`` or a non-default ``orientation_deg``. Rotation and
+    declared tongues still change ``reasons`` (what the joint is labelled) and
+    therefore the plan's drawing/explanation, but never the packed length,
+    unless the shop sets a real penalty or asks for extra room.
     """
     prev_faces = _rotated_faces(prev.far_feature, prev.orientation_deg)
     nxt_faces = _rotated_faces(nxt.start_feature, nxt.orientation_deg)
@@ -116,8 +134,9 @@ def clearance(prev: Part, nxt: Part, kerf: float) -> Clearance:
     reasons: List[str] = []
     face_term = 0.0
     if shared:
-        face_term = prev.far_feature.protrusion_mm + nxt.start_feature.protrusion_mm
         reasons.append(GAP_SHARED_FACES)
+        if shared_face_penalty_mm > 0:
+            face_term = shared_face_penalty_mm
     elif prev.far_feature.faces or nxt.start_feature.faces:
         reasons.append(GAP_INTERLEAVED)
 
@@ -126,6 +145,25 @@ def clearance(prev: Part, nxt: Part, kerf: float) -> Clearance:
         reasons.append(GAP_EXTRA)
 
     return Clearance(kerf + face_term + extra, tuple(reasons))
+
+
+def _gap_terms(kerf: float, reasons: Tuple[str, ...],
+               shared_face_penalty_mm: float, extra_gap_mm: float,
+               ) -> Tuple[Tuple[str, float], ...]:
+    """Itemize a gap's mm for reporting (``Placement.gap_terms``).
+
+    Derived from the SAME reasons :func:`clearance` already computed, so this
+    never re-decides what counts — kerf is always the base term; the other two
+    appear only when ``reasons`` says they actually contributed (which for
+    ``shared_face_penalty`` also means the penalty was > 0 — see
+    :func:`clearance`).
+    """
+    terms: List[Tuple[str, float]] = [("kerf", kerf)]
+    if GAP_SHARED_FACES in reasons and shared_face_penalty_mm > 0:
+        terms.append(("shared_face_penalty", shared_face_penalty_mm))
+    if GAP_EXTRA in reasons:
+        terms.append(("extra", extra_gap_mm))
+    return tuple(terms)
 
 
 #: Deterministic bound on the trial packs the minimal-subset search may spend.
@@ -235,7 +273,8 @@ def _pack(parts: Sequence[Part], spec: StockSpec,
             # assert below), so its last part is always defined here — the
             # gap this candidate would need is PAIR-dependent (§2), not the
             # flat kerf FFD used before orientation/end-features existed.
-            gap = clearance(bar.placements[-1].part, part, spec.kerf).mm
+            gap = clearance(bar.placements[-1].part, part, spec.kerf,
+                           spec.shared_face_penalty_mm).mm
             if bar.remnant + _EPS >= part.length + gap:
                 _append(bar, part)
                 placed = True
@@ -320,18 +359,21 @@ def _append(bar: BarLayout, part: Part) -> None:
     The first piece on a bar starts at 0 with no gap to report (front_trim
     already accounts for the bar's own start; nothing precedes this piece
     there). Otherwise the gap to the piece already at the bar's end is the
-    real pair-dependent :func:`clearance` — kerf, plus any shared-face
-    collision, plus the shop's requested extra gap.
+    real pair-dependent :func:`clearance` — kerf, plus the shop's
+    ``shared_face_penalty_mm`` if the ends share a face, plus the shop's
+    requested extra gap.
     """
     if not bar.placements:
         bar.placements.append(Placement(part=part, start=0.0, end=part.length))
         return
     prev = bar.placements[-1]
-    gap = clearance(prev.part, part, bar.spec.kerf)
+    gap = clearance(prev.part, part, bar.spec.kerf, bar.spec.shared_face_penalty_mm)
     start = prev.end + gap.mm
+    terms = _gap_terms(bar.spec.kerf, gap.reasons, bar.spec.shared_face_penalty_mm,
+                       prev.part.extra_gap_mm)
     bar.placements.append(Placement(
         part=part, start=start, end=start + part.length,
-        gap_before=gap.mm, gap_reason=gap.reasons))
+        gap_before=gap.mm, gap_reason=gap.reasons, gap_terms=terms))
 
 
 def pack_all(parts: Iterable[Part], specs: dict[str, StockSpec],

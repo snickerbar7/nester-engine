@@ -292,7 +292,7 @@ def profile_result_to_dict(r: ProfileResult) -> Dict[str, Any]:
 
 
 def _build_specs(profiles, stock_length, per_profile, kerf, front_trim, back_trim,
-                 extra_stock=None):
+                 extra_stock=None, shared_face_penalty=0.0):
     """Stock spec per profile, plus warnings for remnants nothing in the job matches.
 
     ``extra_stock`` entries are ``{"profile", "length_mm", "label"}``; their
@@ -324,6 +324,7 @@ def _build_specs(profiles, stock_length, per_profile, kerf, front_trim, back_tri
             front_trim=front_trim,
             back_trim=back_trim,
             extra_stock=tuple(extras.get(prof, ())),
+            shared_face_penalty_mm=shared_face_penalty,
         )
         for prof in profiles
     }
@@ -351,6 +352,7 @@ def nest_tube(
     kerf: float = 0.0,
     front_trim: float = 0.0,
     back_trim: float = 0.0,
+    shared_face_penalty: float = 0.0,
     extra_stock: Optional[List[Dict[str, Any]]] = None,
     profile_regex: str = DEFAULT_PROFILE_REGEX,
     qty_regex: Optional[str] = DEFAULT_QTY_REGEX,
@@ -376,7 +378,7 @@ def nest_tube(
             raise ValueError("no readable parts: " + "; ".join(errors) if errors else "no parts")
         specs, stock_warnings = _build_specs(
             {p.profile for p in parts}, stock_length, per_profile, kerf,
-            front_trim, back_trim, extra_stock)
+            front_trim, back_trim, extra_stock, shared_face_penalty)
         results: List[ProfileResult] = pack_all(parts, specs)
 
         nest_result = {
@@ -390,7 +392,8 @@ def nest_tube(
         if out_prefix:
             out_dir = os.path.join(tmp, "out")
             meta = {"generated": "", "kerf": kerf, "front_trim": front_trim,
-                    "back_trim": back_trim, "lang": lang}
+                    "back_trim": back_trim, "shared_face_penalty": shared_face_penalty,
+                    "lang": lang}
             written = _tube_write_reports(results, out_dir, job_name, meta)
             try:
                 from nester.tube.iges_nest import write_nest_iges

@@ -138,6 +138,7 @@ _LANG = {
         "p_kerf": "Ranura de corte (kerf)", "p_front": "Zona muerta de entrada",
         "p_back": "Zona muerta de salida", "p_usable": "Útil por tramo",
         "p_minrem": "Sobrante mínimo útil",
+        "p_sharedpen": "Separación por caras compartidas",
         "p_remnants": "Sobrantes ofrecidos", "p_remnants_v": "{used} de {n} usados",
         "p_solver": "Algoritmo",
         "p_solver_v": "First Fit Decreasing", "p_pieces": "Piezas a cortar",
@@ -220,6 +221,7 @@ _LANG = {
         "p_kerf": "Kerf", "p_front": "Front dead zone",
         "p_back": "Back dead zone", "p_usable": "Usable per bar",
         "p_minrem": "Min. remnant kept",
+        "p_sharedpen": "Shared-face penalty",
         "p_remnants": "Remnants offered", "p_remnants_v": "{used} of {n} used",
         "p_solver": "Solver",
         "p_solver_v": "First Fit Decreasing", "p_pieces": "Pieces to cut",
@@ -400,7 +402,8 @@ def _as_dict(results: List[ProfileResult], job_name: str, meta: Dict, warnings: 
         "job": job_name,
         "generated": meta.get("generated"),
         "params": {k: meta[k] for k in
-                   ("kerf", "front_trim", "back_trim", "min_remnant", "minimize_bars")
+                   ("kerf", "front_trim", "back_trim", "min_remnant",
+                    "shared_face_penalty", "minimize_bars")
                    if k in meta},
         "warnings": list(warnings or []),
         "totals": {
@@ -447,7 +450,7 @@ def _as_dict(results: List[ProfileResult], job_name: str, meta: Dict, warnings: 
                              "orientation_deg": p.part.orientation_deg,
                              "gap_before": round(p.gap_before, 3),
                              "gap_reason": list(p.gap_reason),
-                             "gap_story": gap_story_es(p.gap_reason)}
+                             "gap_story": gap_story_es(p.gap_terms)}
                             for p in b.placements
                         ],
                     }
@@ -530,7 +533,7 @@ def _build_plan(results: List[ProfileResult], L, job_tag: str):
                     bar_tag=tag, pos=i, piece=piece,
                     start=ft + p.start, end=ft + p.end,
                     folio=f"{job_tag}-{piece.pid.replace('-', '')}-{folio_seq[piece.pid]:02d}",
-                    desc=base, gap_story=gap_story_es(p.gap_reason)))
+                    desc=base, gap_story=gap_story_es(p.gap_terms)))
             bars.append(_Bar(result=r, bar=b, label=_bar_label(L, b, nums),
                              tag=tag, cuts=cuts))
     return list(pieces.values()), bars
@@ -1153,6 +1156,7 @@ def _right_column(c, L, results, pieces, bars, cuts, meta, x, w, y, floor):
     n_rem = sum(len(r.spec.extra_stock) for r in results)
     n_used = sum(len(r.remnants_used) for r in results)
     min_rem = max((r.spec.min_remnant for r in results), default=0.0)
+    shared_pen = max((r.spec.shared_face_penalty_mm for r in results), default=0.0)
     rows = [
         (L["p_profile"], _ellipsize(c, profs, MONO_B, px(12), w * 0.62)),
         (L["p_stock"], stocks),
@@ -1163,6 +1167,10 @@ def _right_column(c, L, results, pieces, bars, cuts, meta, x, w, y, floor):
     ]
     if min_rem:
         rows.append((L["p_minrem"], _mmn(min_rem)))
+    if shared_pen:
+        # Only shown when the shop actually set one — the default is 0
+        # (unmeasured, uncharged), so most jobs never print this row.
+        rows.append((L["p_sharedpen"], _mmn(shared_pen)))
     if n_rem:
         # How many of the offered pieces the plan actually opened: one that
         # would not have removed a tramo stays on the rack, and the shop needs

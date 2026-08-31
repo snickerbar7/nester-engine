@@ -158,6 +158,13 @@ class NestRequest(BaseModel):
     kerf_mm: float = 0.0
     front_trim_mm: float = 0.0
     back_trim_mm: float = 0.0
+    shared_face_penalty_mm: float = Field(
+        0.0, ge=0,
+        description="tube only: extra clearance to reserve, on top of kerf, "
+                    "between two neighbours whose end features land on the "
+                    "SAME face after rotation. 0 (default) means unmeasured "
+                    "and uncharged — the engine never derives this number "
+                    "from the parts' declared protrusions.")
     profile_regex: str = DEFAULT_PROFILE_REGEX
     qty_regex: Optional[str] = DEFAULT_QTY_REGEX
     job_name: str = "nest"
@@ -420,6 +427,7 @@ def nest(req: NestRequest, client: Client = Depends(require_client)) -> Dict[str
             files, stock_length=req.stock_length_mm,
             per_profile=req.per_profile_stock_length_mm, kerf=req.kerf_mm,
             front_trim=req.front_trim_mm, back_trim=req.back_trim_mm,
+            shared_face_penalty=req.shared_face_penalty_mm,
             extra_stock=extra_stock,
             profile_regex=req.profile_regex, qty_regex=req.qty_regex, unit="mm",
             job_name=req.job_name, lang=req.lang, out_prefix=req.out_prefix,

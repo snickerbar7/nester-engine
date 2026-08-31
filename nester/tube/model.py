@@ -25,19 +25,55 @@ GAP_INTERLEAVED = "interleaved"       # end features present, no shared faces ->
 GAP_SHARED_FACES = "shared_faces"     # protrusions collide -> gap grows to clear them
 GAP_EXTRA = "extra"                   # the shop asked for extra room after the previous piece
 
-# Foreman-register Spanish for each reason, shared by the CLI's --json output
-# and the written report — a gap the shop didn't ask for should never print as
-# a bare, unexplained number.
+# Foreman-register Spanish for each reason — a STATE label about how the two
+# neighbouring ends are clocked (Placement.gap_reason), never a claim about
+# what was charged. "Caras compartidas" only means the faces line up; whether
+# that costs anything depends on StockSpec.shared_face_penalty_mm, which
+# defaults to 0 (nester.tube.packing.clearance) — so this label must never be
+# read as "this joint reserved extra mm to clear a collision".
 GAP_REASON_ES: Dict[str, str] = {
     GAP_INTERLEAVED: "entrelazadas: las lengüetas no comparten cara",
-    GAP_SHARED_FACES: "caras compartidas: las lengüetas chocan",
+    GAP_SHARED_FACES: "caras compartidas: mismas caras que la pieza anterior",
     GAP_EXTRA: "separación extra pedida por el taller",
 }
 
+# Spanish label for each ITEMIZED gap charge (Placement.gap_terms / the CLI's
+# --json "gap_story"). Unlike GAP_REASON_ES above, every entry here is a real
+# millimetre figure that was actually reserved: "kerf" is the one term that is
+# (almost) always present; "shared_face_penalty" and "extra" only ever appear
+# when their mm is > 0. This is deliberately a SEPARATE vocabulary from
+# GAP_REASON_ES — a joint can be *labelled* "shared_faces" while charging
+# nothing for it (the default, unmeasured penalty is 0), and gap_story_es must
+# never say "caras compartidas" next to a number that was never reserved.
+GAP_TERM_ES: Dict[str, str] = {
+    "kerf": "ranura de corte (kerf)",
+    "shared_face_penalty": "caras compartidas",
+    "extra": "extra del taller",
+}
 
-def gap_story_es(reasons: Tuple[str, ...]) -> str:
-    """A gap's reasons joined into one phrase; '' for plain kerf (no story)."""
-    return " + ".join(GAP_REASON_ES.get(r, r) for r in reasons)
+
+def gap_story_es(terms: Tuple[Tuple[str, float], ...]) -> str:
+    """A gap's itemized mm charges joined into one phrase.
+
+    ``terms`` is the ordered ``(label_key, mm)`` sequence on
+    ``Placement.gap_terms`` — kerf first (the baseline), then whichever of
+    ``shared_face_penalty`` / ``extra`` actually added millimetres (see
+    ``nester.tube.packing._append``). '' when there is nothing beyond plain
+    kerf to explain — the common case, and every ordinary cut stays silent
+    exactly as it did before this feature existed. In particular, a joint
+    whose faces merely share (``StockSpec.shared_face_penalty_mm`` at its
+    default of 0) or merely interleave produces '' here: the state is still
+    visible on ``Placement.gap_reason`` / ``GAP_REASON_ES``, it just never
+    earns a millimetre line it didn't cost.
+    """
+    if len(terms) <= 1:
+        return ""
+    parts = []
+    for i, (key, mm) in enumerate(terms):
+        label = GAP_TERM_ES.get(key, key)
+        sign = "" if i == 0 else "+"
+        parts.append(f"{label} {sign}{mm:g} mm")
+    return " · ".join(parts)
 
 
 # Why a remnant (retazo) offered to the job was never opened. Reported per
@@ -149,6 +185,19 @@ class StockSpec:
     NOT ``back_trim`` — the back trim is the chuck dead zone the machine cannot
     reach, which is a different thing. 0 (the default) means the tool does not
     classify the drop at all, and the net and gross yields coincide.
+
+    ``shared_face_penalty_mm`` is the extra clearance to reserve, on top of
+    kerf, between two neighbours whose end features land on the SAME face
+    after ``Part.orientation_deg`` is applied (docs/PLAN-orientacion-tubo.md
+    §2). It defaults to 0 DELIBERATELY: no one has measured how much room two
+    same-oriented tongues actually need, and this round found the engine had
+    invented a number (summing the two protrusions) without ever validating it
+    against a real part — a second, independent guess (12.0 mm, from a design
+    round) did not even agree with the engine's own estimate, which is the
+    signal that neither was grounded. This is a MACHINE allowance, so it lives
+    here beside ``kerf``/``front_trim``/``back_trim`` — not on the part —
+    exactly like those, if the real cost is ever measured it is a single
+    number dropped in here, not a per-part fudge.
     """
 
     profile: str
@@ -158,10 +207,17 @@ class StockSpec:
     back_trim: float = 0.0   # dead zone / required remnant at the far end
     extra_stock: Tuple[ExtraStock, ...] = ()   # remnants on the rack
     min_remnant: float = 0.0   # shortest drop worth keeping (0 = don't classify)
+    # Shop-set clearance for same-face end features; 0 = not measured, not
+    # charged (see the docstring above). See nester.tube.packing.clearance.
+    shared_face_penalty_mm: float = 0.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.extra_stock, tuple):
             object.__setattr__(self, "extra_stock", tuple(self.extra_stock))
+        if self.shared_face_penalty_mm < 0:
+            raise ValueError(
+                f"{self.profile}: shared_face_penalty_mm must be >= 0, "
+                f"got {self.shared_face_penalty_mm}")
 
     def usable_for(self, length: float) -> float:
         """Usable region of a bar of ``length`` (tramo or remnant alike).
@@ -197,8 +253,14 @@ class Placement:
     gap_before: float = 0.0
     # Why gap_before is what it is: () for the first piece on a bar; otherwise
     # any combination of GAP_INTERLEAVED / GAP_SHARED_FACES / GAP_EXTRA. See
-    # nester.tube.packing.clearance.
+    # nester.tube.packing.clearance. A STATE label, not a charge — see
+    # GAP_REASON_ES vs GAP_TERM_ES above.
     gap_reason: Tuple[str, ...] = ()
+    # gap_before broken into what it actually charges: (("kerf", mm), ...) plus
+    # "shared_face_penalty" / "extra" whenever they contributed real mm. () for
+    # the first piece on a bar. Feeds gap_story_es(); see
+    # nester.tube.packing._append.
+    gap_terms: Tuple[Tuple[str, float], ...] = ()
 
 
 @dataclass

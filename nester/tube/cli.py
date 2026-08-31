@@ -104,6 +104,7 @@ def main(argv: List[str] | None = None) -> int:
             "front_trim": args.front_trim,
             "back_trim": args.back_trim,
             "min_remnant": args.min_remnant,
+            "shared_face_penalty": args.shared_face_penalty,
             "minimize_bars": bool(args.minimize_bars),
             "lang": args.lang,
         }
@@ -206,6 +207,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--kerf", type=float, default=0.0, help="saw kerf per cut (mm)")
     p.add_argument("--front-trim", type=float, default=0.0, help="clamp/loading dead zone (mm)")
     p.add_argument("--back-trim", type=float, default=0.0, help="far-end dead zone / min remnant (mm)")
+    p.add_argument("--shared-face-penalty", type=float, default=0.0, metavar="MM",
+                   help="extra clearance to reserve, on top of kerf, between two "
+                        "neighbours whose end features land on the SAME face after "
+                        "rotation (mm, default 0). 0 means unmeasured and uncharged "
+                        "— the engine does not invent this number from the parts' "
+                        "declared protrusions; set it once the shop has measured "
+                        "the real spacing it needs.")
     p.add_argument("--profile-regex", default=DEFAULT_PROFILE_REGEX,
                    help="regex with a 'profile' group to read from filenames")
     p.add_argument("--qty-regex", default=DEFAULT_QTY_REGEX,
@@ -370,6 +378,7 @@ def _build_specs(parts: List[Part], args: argparse.Namespace) -> Dict[str, Stock
             back_trim=args.back_trim,
             extra_stock=tuple(extra.get(profile, ())),
             min_remnant=getattr(args, "min_remnant", 0.0) or 0.0,
+            shared_face_penalty_mm=getattr(args, "shared_face_penalty", 0.0) or 0.0,
         )
     for profile in extra:
         if profile not in specs:
@@ -510,8 +519,11 @@ def _format_report(results: List[ProfileResult], errors_count: int) -> str:
         lines.append(f"● Profile {r.profile}  —  {r.new_bars_needed} new bar(s) "
                      f"@ {r.spec.stock_length:g}mm{extra}"
                      f"  ·  {yields}")
+        penalty_txt = (f"  shared-face-penalty {r.spec.shared_face_penalty_mm:g}"
+                      if r.spec.shared_face_penalty_mm else "")
         lines.append(f"  kerf {r.spec.kerf:g}  front-trim {r.spec.front_trim:g}  "
-                     f"back-trim {r.spec.back_trim:g}  usable {r.spec.usable_length:g}mm")
+                     f"back-trim {r.spec.back_trim:g}  usable {r.spec.usable_length:g}mm"
+                     f"{penalty_txt}")
         n_new = 0
         for bar in r.bars:
             cuts = ", ".join(f"{p.part.length:g}@{p.start:g}" for p in bar.placements)
@@ -564,7 +576,7 @@ def _as_dict(results: List[ProfileResult]) -> dict:
                              "orientation_deg": p.part.orientation_deg,
                              "gap_before": round(p.gap_before, 3),
                              "gap_reason": list(p.gap_reason),
-                             "gap_story": gap_story_es(p.gap_reason)}
+                             "gap_story": gap_story_es(p.gap_terms)}
                             for p in b.placements
                         ],
                     }

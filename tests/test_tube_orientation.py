@@ -1,22 +1,39 @@
 """Orientation, end features and pair-dependent clearance (§A/§B of
 docs/PLAN-orientacion-tubo.md).
 
-The physical fact this is built on (measured by sectioning a real customer
-part — 25.4x25.4 cal.18 PTR, 761.22 mm): a ~6 mm male tongue at each end, made
-by relieving two opposite faces while the other two stay full. Two neighbours
-at the SAME rotation have their tongues on the same walls and collide, so the
-gap must grow; rotate one 90 degrees and the features land on different faces
-— they interleave, and the gap drops back to kerf.
+The physical fact that motivates the MECHANISM (measured by sectioning a real
+customer part — 25.4x25.4 cal.18 PTR, 761.22 mm): a ~6 mm male tongue at each
+end, made by relieving two opposite faces while the other two stay full. Two
+neighbours at the SAME rotation have their tongues on the same walls, which is
+the state ``clearance()`` labels ``shared_faces``; rotate one 90 degrees and
+the features land on different faces — ``interleaved``.
 
-Two invariants matter most here, and are pinned first:
+**What is NOT measured, and therefore not charged by default:** how many extra
+millimetres two same-oriented tongues actually need to clear each other. An
+earlier version of this engine summed the two declared protrusions (~12 mm)
+and reserved that automatically; a design round, working independently,
+guessed a DIFFERENT number for the same physical situation. Two disagreeing
+guesses is the signal that neither was grounded, so the engine no longer
+invents this term at all: ``StockSpec.shared_face_penalty_mm`` defaults to 0,
+is a machine allowance the SHOP sets (like kerf/front_trim/back_trim), and
+``clearance()`` charges exactly that value — never the parts' own protrusion
+numbers — when two ends share a face.
 
-  1. ZERO CHANGE WHEN UNUSED. With no end features, no extra_gap and default
-     orientation, clearance() must return exactly kerf, and a full pack must
-     be identical to the tool before this feature existed (the CLI-level
-     before/after diff over samples/ that proves this end-to-end lives
-     outside pytest — see the ship notes — but the packing-level version of
-     the same claim is pinned here as ``test_zero_change_when_unused``).
-  2. NO BAR EVER OVERFLOWS. Every placement's start/end is independently
+Three invariants matter most here, and are pinned first:
+
+  1. ZERO CHANGE WHEN UNUSED — the ORIGINAL claim. With no end features, no
+     extra_gap and default orientation, clearance() must return exactly kerf.
+  2. ZERO CHANGE WITH THE PENALTY AT ITS DEFAULT — STRONGER, added by this
+     round's correction. Even when parts DO carry end_features and a non-zero
+     orientation_deg, ``shared_face_penalty_mm == 0`` (the default) must pack
+     byte-identically to a job with none of that declared. Rotation and
+     declared tongues change the drawing and the plan's explanation, never the
+     packed length, unless the shop sets a real penalty or extra_gap_mm.
+     Pinned as ``test_zero_change_when_unused`` (claim 1) and
+     ``test_zero_change_with_features_and_rotation_when_penalty_is_default``
+     (claim 2 — the CLI-level before/after diff over samples/ that proves the
+     end-to-end version of this lives outside pytest; see the ship notes).
+  3. NO BAR EVER OVERFLOWS. Every placement's start/end is independently
      reconstructed from the parts' own declared features (never trusting
      BarLayout.consumed_length/remnant, which are themselves under test) and
      checked against the bar's usable length — the same "reconstruct, don't
@@ -123,14 +140,42 @@ def test_clearance_plain_ends_is_exactly_kerf():
     assert clearance(a, b, kerf=2.0) == Clearance(2.0, ())
 
 
-def test_clearance_shared_faces_adds_both_protrusions():
+def test_clearance_shared_faces_defaults_to_zero_penalty_stays_at_kerf():
+    """The core correction: with no explicit shared_face_penalty_mm, sharing a
+    face costs NOTHING beyond kerf — the engine never sums the parts' own
+    protrusion_mm to invent a number. The joint is still LABELLED
+    shared_faces (a state, not a charge)."""
     a = Part(name="a", profile="p", length=100,
              end_features={"far": EndFeature(protrusion_mm=6.0, faces=(1, 3))})
     b = Part(name="b", profile="p", length=100,
              end_features={"start": EndFeature(protrusion_mm=4.0, faces=(3,))})
     g = clearance(a, b, kerf=2.0)
-    assert g.mm == pytest.approx(2.0 + 6.0 + 4.0)
+    assert g.mm == pytest.approx(2.0)
     assert g.reasons == (GAP_SHARED_FACES,)
+
+
+def test_clearance_shared_faces_charges_the_spec_penalty_not_the_protrusions():
+    """With an explicit shared_face_penalty_mm, THAT value is charged once —
+    not the sum of the two parts' protrusion_mm, and not affected by what
+    those protrusions happen to be."""
+    a = Part(name="a", profile="p", length=100,
+             end_features={"far": EndFeature(protrusion_mm=6.0, faces=(1, 3))})
+    b = Part(name="b", profile="p", length=100,
+             end_features={"start": EndFeature(protrusion_mm=4.0, faces=(3,))})
+    g = clearance(a, b, kerf=2.0, shared_face_penalty_mm=9.0)
+    assert g.mm == pytest.approx(2.0 + 9.0)
+    assert g.reasons == (GAP_SHARED_FACES,)
+
+
+def test_clearance_shared_face_penalty_only_applies_when_faces_actually_share():
+    """A non-zero shared_face_penalty_mm must never leak into a joint whose
+    faces don't actually share (interleaved) or that has no features at all —
+    it is gated on the SAME shared-face test as the reason label."""
+    a = Part(name="a", profile="p", length=100)
+    b = Part(name="b", profile="p", length=100)
+    g = clearance(a, b, kerf=2.0, shared_face_penalty_mm=9.0)
+    assert g.mm == pytest.approx(2.0)
+    assert g.reasons == ()
 
 
 def test_clearance_no_shared_faces_is_interleaved_and_stays_at_kerf():
@@ -162,12 +207,27 @@ def test_clearance_extra_gap_is_the_PREVIOUS_parts_property_not_the_next():
 
 
 def test_clearance_combines_shared_faces_and_extra_gap():
+    """extra_gap_mm is additive on top of the shared-face penalty (also
+    explicit here, since the default of 0 would otherwise make this
+    indistinguishable from a plain extra-gap test)."""
+    a = Part(name="a", profile="p", length=100, extra_gap_mm=5.0,
+             end_features={"far": EndFeature(protrusion_mm=6.0, faces=(1,))})
+    b = Part(name="b", profile="p", length=100,
+             end_features={"start": EndFeature(protrusion_mm=3.0, faces=(1,))})
+    g = clearance(a, b, kerf=1.0, shared_face_penalty_mm=9.0)
+    assert g.mm == pytest.approx(1.0 + 9.0 + 5.0)
+    assert set(g.reasons) == {GAP_SHARED_FACES, GAP_EXTRA}
+
+
+def test_clearance_combines_shared_faces_and_extra_gap_at_default_penalty():
+    """Same joint, but with the shared-face penalty left at its default (0):
+    only the shop's own extra_gap_mm is charged, never the protrusions."""
     a = Part(name="a", profile="p", length=100, extra_gap_mm=5.0,
              end_features={"far": EndFeature(protrusion_mm=6.0, faces=(1,))})
     b = Part(name="b", profile="p", length=100,
              end_features={"start": EndFeature(protrusion_mm=3.0, faces=(1,))})
     g = clearance(a, b, kerf=1.0)
-    assert g.mm == pytest.approx(1.0 + 6.0 + 3.0 + 5.0)
+    assert g.mm == pytest.approx(1.0 + 5.0)
     assert set(g.reasons) == {GAP_SHARED_FACES, GAP_EXTRA}
 
 
@@ -208,18 +268,31 @@ def _ptr_piece(name: str, orientation_deg: float) -> Part:
                end_features={"start": tongue, "far": tongue})
 
 
-def test_worked_example_same_orientation_collides():
+def test_worked_example_same_orientation_at_default_penalty_stays_at_kerf():
+    """The corrected behaviour: with no measured shared_face_penalty_mm, two
+    same-oriented real tongues are labelled ``shared_faces`` but cost nothing
+    beyond kerf — the engine no longer estimates ~12 mm from their declared
+    protrusion_mm. The shop must set the real number itself."""
     a, b = _ptr_piece("A", 0.0), _ptr_piece("B", 0.0)
     g = clearance(a, b, kerf=0.2)
-    # kerf + 6mm (A's far tongue) + 6mm (B's start tongue) == the plan's own
-    # "~12 mm" estimate for two same-oriented tongues colliding.
-    assert g.mm == pytest.approx(0.2 + 12.0)
+    assert g.mm == pytest.approx(0.2)
+    assert g.reasons == (GAP_SHARED_FACES,)
+
+
+def test_worked_example_same_orientation_with_shop_set_penalty():
+    """Once the shop supplies a real shared_face_penalty_mm (however they
+    arrived at it), it — and only it — is what gets charged."""
+    a, b = _ptr_piece("A", 0.0), _ptr_piece("B", 0.0)
+    g = clearance(a, b, kerf=0.2, shared_face_penalty_mm=9.0)
+    assert g.mm == pytest.approx(0.2 + 9.0)
     assert g.reasons == (GAP_SHARED_FACES,)
 
 
 def test_worked_example_90_degrees_apart_interleaves():
     a, b = _ptr_piece("A", 0.0), _ptr_piece("B", 90.0)
-    g = clearance(a, b, kerf=0.2)
+    # Even with a shared-face penalty ON THE BOOKS, it must never leak into a
+    # joint whose faces genuinely interleave.
+    g = clearance(a, b, kerf=0.2, shared_face_penalty_mm=9.0)
     assert g.mm == pytest.approx(0.2)     # drops all the way back to plain kerf
     assert g.reasons == (GAP_INTERLEAVED,)
 
@@ -245,6 +318,45 @@ def test_zero_change_when_unused():
                 assert pl.gap_before == pytest.approx(spec.kerf)
 
 
+def test_zero_change_with_features_and_rotation_when_penalty_is_default():
+    """The STRONGER invariant this correction establishes: even when parts DO
+    carry real end_features and non-default orientation_deg, the pack is
+    BYTE-IDENTICAL to plain parts as long as shared_face_penalty_mm stays at
+    its default (0). Half the pieces here are same-oriented tongues (would be
+    labelled shared_faces) and half are rotated 90 degrees (interleaved) — the
+    labels differ, the packed positions do not: every gap is exactly kerf,
+    same as test_zero_change_when_unused above, on the identical set of
+    lengths."""
+    lengths = [float(100 + 7 * i) for i in range(12)]
+    tongue = EndFeature(protrusion_mm=6.0, faces=(1, 3))
+
+    plain = [Part(name=f"p{i}", profile="p", length=ln) for i, ln in enumerate(lengths)]
+    featured = [
+        Part(name=f"p{i}", profile="p", length=ln,
+             orientation_deg=0.0 if i % 2 == 0 else 90.0,
+             end_features={"start": tongue, "far": tongue})
+        for i, ln in enumerate(lengths)
+    ]
+    spec = StockSpec(profile="p", stock_length=1000.0, kerf=2.5)   # shared_face_penalty_mm=0 (default)
+
+    r_plain = pack_profile(plain, spec)
+    r_featured = pack_profile(featured, spec)
+
+    assert r_plain.new_bars_needed == r_featured.new_bars_needed
+    assert len(r_plain.bars) == len(r_featured.bars)
+    for b_plain, b_featured in zip(r_plain.bars, r_featured.bars):
+        assert len(b_plain.placements) == len(b_featured.placements)
+        for pl_plain, pl_featured in zip(b_plain.placements, b_featured.placements):
+            assert pl_plain.start == pytest.approx(pl_featured.start)
+            assert pl_plain.end == pytest.approx(pl_featured.end)
+            assert pl_plain.gap_before == pytest.approx(pl_featured.gap_before)
+            # The featured pack DOES label its joints (shared_faces/
+            # interleaved) — that's the labelling invariant staying intact —
+            # it just never turns into extra millimetres.
+            if pl_featured.gap_reason:
+                assert set(pl_featured.gap_reason) <= {GAP_SHARED_FACES, GAP_INTERLEAVED}
+
+
 # --------------------------------------------------------------------------- #
 # Invariant 2 — no bar ever overflows (property test, randomized)
 # --------------------------------------------------------------------------- #
@@ -261,7 +373,8 @@ def _independent_reconstruction(bar, spec) -> float:
         if prev is None:
             start = 0.0
         else:
-            gap = clearance(prev.part, pl.part, spec.kerf).mm
+            gap = clearance(prev.part, pl.part, spec.kerf,
+                            spec.shared_face_penalty_mm).mm
             start = prev.end + gap
         end = start + pl.part.length
         assert start == pytest.approx(pl.start, abs=1e-6)
@@ -296,8 +409,9 @@ def test_no_bar_ever_overflows_with_random_orientation_and_features(seed):
     rng = random.Random(seed)
     n = rng.randint(1, 25)
     parts = [_random_part(rng, i) for i in range(n)]
+    penalty = rng.choice([0.0, 0.0, 0.0, rng.uniform(0.0, 20.0)])
     spec = StockSpec(profile="p", stock_length=rng.uniform(1000.0, 6000.0),
-                     kerf=rng.uniform(0.0, 3.0))
+                     kerf=rng.uniform(0.0, 3.0), shared_face_penalty_mm=penalty)
     result = pack_profile(parts, spec, minimize_bars=False)
 
     for bar in result.bars:
@@ -395,11 +509,12 @@ def test_load_parts_defaults_are_untouched_parts():
               for p in parts)
 
 
-def test_same_orientation_can_cost_more_bars_than_alternating():
-    """Forcing every piece to the SAME orientation (tongues collide) must
+def test_same_orientation_can_cost_more_bars_when_shop_sets_a_penalty():
+    """Forcing every piece to the SAME orientation (tongues share a face) must
     never be reported as cheaper than alternating them (tongues interleave) —
     demonstrating that rotation really does change the nest, as corrected in
-    docs/PLAN-orientacion-tubo.md."""
+    docs/PLAN-orientacion-tubo.md §2. This only bites once the shop has SET a
+    shared_face_penalty_mm; see the companion test below for the default."""
     tongue = EndFeature(protrusion_mm=6.0, faces=(1, 3))
 
     def piece(i, orientation_deg):
@@ -409,9 +524,115 @@ def test_same_orientation_can_cost_more_bars_than_alternating():
     same = [piece(i, 0.0) for i in range(8)]
     alternating = [piece(i, 0.0 if i % 2 == 0 else 90.0) for i in range(8)]
 
-    spec = StockSpec(profile="p", stock_length=6500.0, kerf=0.2)
+    # 8 x 761.22 = 6089.76mm of parts + 7 gaps. Alternating pays 7 x kerf
+    # (0.2mm) = 6091.16mm total, fits a single 6120mm bar; same-orientation
+    # pays 7 x (kerf + 9mm penalty) = 6154.16mm, which does NOT fit — forcing
+    # a second bar. The stock length is chosen deliberately narrow so the 9mm
+    # penalty is the thing that tips it, not headroom.
+    spec = StockSpec(profile="p", stock_length=6120.0, kerf=0.2,
+                     shared_face_penalty_mm=9.0)
     r_same = pack_profile(same, spec, minimize_bars=False)
     r_alt = pack_profile(alternating, spec, minimize_bars=False)
 
     assert r_same.new_bars_needed >= r_alt.new_bars_needed
     assert r_same.total_stock_length >= r_alt.total_stock_length
+    # And it is a REAL difference here, not a vacuous >=: the 9 mm penalty
+    # pushes the same-orientation job onto a second bar that alternating never
+    # needed.
+    assert r_same.total_stock_length > r_alt.total_stock_length
+
+
+def test_same_orientation_costs_the_same_as_alternating_at_default_penalty():
+    """The other half of the correction: with shared_face_penalty_mm left at
+    its default (0), the SAME same-vs-alternating comparison above must come
+    back EQUAL — rotation changes what the joints are labelled, never how many
+    bars the job buys, unless the shop opted into a penalty."""
+    tongue = EndFeature(protrusion_mm=6.0, faces=(1, 3))
+
+    def piece(i, orientation_deg):
+        return Part(name=f"p{i}", profile="p", length=761.22, orientation_deg=orientation_deg,
+                   end_features={"start": tongue, "far": tongue})
+
+    same = [piece(i, 0.0) for i in range(8)]
+    alternating = [piece(i, 0.0 if i % 2 == 0 else 90.0) for i in range(8)]
+
+    spec = StockSpec(profile="p", stock_length=6500.0, kerf=0.2)   # penalty=0
+    r_same = pack_profile(same, spec, minimize_bars=False)
+    r_alt = pack_profile(alternating, spec, minimize_bars=False)
+
+    assert r_same.new_bars_needed == r_alt.new_bars_needed
+    assert r_same.total_stock_length == pytest.approx(r_alt.total_stock_length)
+
+
+# --------------------------------------------------------------------------- #
+# StockSpec.shared_face_penalty_mm — validation
+# --------------------------------------------------------------------------- #
+
+def test_stock_spec_shared_face_penalty_defaults_to_zero():
+    spec = StockSpec(profile="p", stock_length=1000.0)
+    assert spec.shared_face_penalty_mm == 0.0
+
+
+def test_stock_spec_rejects_negative_shared_face_penalty():
+    with pytest.raises(ValueError):
+        StockSpec(profile="p", stock_length=1000.0, shared_face_penalty_mm=-1.0)
+
+
+# --------------------------------------------------------------------------- #
+# Reporting — gap_terms / gap_story_es never charge millimetres that were
+# never reserved (see nester.tube.model.gap_story_es).
+# --------------------------------------------------------------------------- #
+
+from nester.tube.model import gap_story_es
+
+
+def test_gap_story_is_silent_for_plain_kerf():
+    parts = [Part(name="a", profile="p", length=100), Part(name="b", profile="p", length=100)]
+    spec = StockSpec(profile="p", stock_length=1000.0, kerf=3.0)
+    result = pack_profile(parts, spec)
+    bar = result.bars[0]
+    assert bar.placements[1].gap_terms == (("kerf", 3.0),)
+    assert gap_story_es(bar.placements[1].gap_terms) == ""
+
+
+def test_gap_story_omits_shared_faces_line_when_penalty_is_default():
+    """The exact correction this round makes: a joint LABELLED shared_faces
+    must not print a millimetre figure for it when shared_face_penalty_mm is
+    0 (the default) — the story stays silent, same as plain kerf, even though
+    gap_reason still says shared_faces."""
+    tongue = EndFeature(protrusion_mm=6.0, faces=(1, 3))
+    a = Part(name="a", profile="p", length=100, end_features={"far": tongue})
+    b = Part(name="b", profile="p", length=100, end_features={"start": tongue})
+    spec = StockSpec(profile="p", stock_length=1000.0, kerf=3.0)   # penalty=0
+    result = pack_profile([a, b], spec)
+    pl = result.bars[0].placements[1]
+    assert pl.gap_reason == (GAP_SHARED_FACES,)          # still labelled
+    assert pl.gap_terms == (("kerf", 3.0),)               # but charges nothing extra
+    assert gap_story_es(pl.gap_terms) == ""                # so the story is silent
+    assert "caras compartidas" not in gap_story_es(pl.gap_terms)
+
+
+def test_gap_story_itemizes_kerf_and_extra():
+    a = Part(name="a", profile="p", length=100, extra_gap_mm=20.0)
+    b = Part(name="b", profile="p", length=100)
+    spec = StockSpec(profile="p", stock_length=1000.0, kerf=3.0)
+    result = pack_profile([a, b], spec)
+    pl = result.bars[0].placements[1]
+    assert pl.gap_terms == (("kerf", 3.0), ("extra", 20.0))
+    story = gap_story_es(pl.gap_terms)
+    assert "ranura de corte (kerf) 3" in story
+    assert "extra del taller +20" in story
+
+
+def test_gap_story_itemizes_shared_face_penalty_when_shop_sets_one():
+    tongue = EndFeature(protrusion_mm=6.0, faces=(1, 3))
+    a = Part(name="a", profile="p", length=100, end_features={"far": tongue})
+    b = Part(name="b", profile="p", length=100, end_features={"start": tongue})
+    spec = StockSpec(profile="p", stock_length=1000.0, kerf=3.0,
+                     shared_face_penalty_mm=9.0)
+    result = pack_profile([a, b], spec)
+    pl = result.bars[0].placements[1]
+    assert pl.gap_terms == (("kerf", 3.0), ("shared_face_penalty", 9.0))
+    story = gap_story_es(pl.gap_terms)
+    assert "ranura de corte (kerf) 3" in story
+    assert "caras compartidas +9" in story

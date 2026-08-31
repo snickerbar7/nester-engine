@@ -148,56 +148,86 @@ IGES files ──▶ extract cut length ──▶ group by profile ──▶ pac
   meaning and value** — Harriet's frozen `/nest` reads it, and with no
   `min_remnant` net == gross, so nothing moved for existing callers.
 - **Allowances**: `--kerf` per cut, `--front-trim` (clamp dead zone),
-  `--back-trim` (far-end remnant). Usable = bar length − front − back (for a
-  retazo too). Each part reserves `length + clearance`, where `clearance`
-  defaults to `kerf` and grows when the shop declares orientation/end
-  features (below) — the two are the same reservation, not two mechanisms.
+  `--back-trim` (far-end remnant), `--shared-face-penalty` (below). Usable =
+  bar length − front − back (for a retazo too). Each part reserves
+  `length + clearance`, where `clearance` defaults to `kerf` and grows only
+  when the shop asks it to (below) — the two are the same reservation, not two
+  mechanisms.
 - **Orientación angular de piezas (E26)** — the shop controls how each piece is
-  CLOCKED in the tube, and the solver charges the real consequence instead of
-  a flat kerf. Per part: `Part.orientation_deg` (0 = as it came from CAD;
-  rectangular profiles use 0/90/180/270 in practice, a round tube's is
-  continuous and is never rejected for not being a multiple of 90),
-  `Part.extra_gap_mm` (>= 0, extra room the shop demands AFTER this piece),
-  and `Part.end_features` — per end (`start`/`far`), `{protrusion_mm, faces}`
-  where `faces` are 1..4 in the part's OWN un-rotated frame. Empty/absent =
-  a plain square end, and then everything behaves exactly as it did before
-  these fields existed — **this is the load-bearing invariant**: a job with
-  no features and no extra_gap is byte-identical to the tool before E26,
-  proven by diffing `--json` output over `samples/` pre/post.
+  CLOCKED in the tube, and the solver charges exactly what the shop tells it
+  to — never a number it invents itself. Per part: `Part.orientation_deg`
+  (0 = as it came from CAD; rectangular profiles use 0/90/180/270 in practice,
+  a round tube's is continuous and is never rejected for not being a multiple
+  of 90), `Part.extra_gap_mm` (>= 0, extra room the shop demands AFTER this
+  piece), and `Part.end_features` — per end (`start`/`far`),
+  `{protrusion_mm, faces}` where `faces` are 1..4 in the part's OWN un-rotated
+  frame. Empty/absent = a plain square end. **This is the load-bearing
+  invariant, and it got STRONGER in the correction below**: with
+  `StockSpec.shared_face_penalty_mm` at its default (0), the nest is
+  byte-identical to the tool before E26 EVEN WHEN parts carry real
+  `end_features`/`orientation_deg` — proven both by
+  `tests/test_tube_orientation.py::
+  test_zero_change_with_features_and_rotation_when_penalty_is_default` and by
+  diffing `--json` over `samples/` with `--orient`/`--end-feature` declared on
+  one file: only that cut's `orientation_deg` field differs, no bar or
+  position moves.
 
-  The physical fact this is built on — measured by sectioning a real customer
-  part (25.4×25.4 cal.18 PTR, 761.22 mm): a ~6 mm male tongue at each end, made
-  by relieving two opposite faces while the other two stay full. Two
-  neighbours at the SAME rotation have their tongues on the same walls and
-  collide — the gap must grow; rotate one 90° and the features land on
-  different faces — they interleave, and the gap drops back to kerf. So the
-  length consumed per piece stops being `length + kerf` and becomes
+  The physical fact that motivates the MECHANISM — measured by sectioning a
+  real customer part (25.4×25.4 cal.18 PTR, 761.22 mm): a ~6 mm male tongue at
+  each end, made by relieving two opposite faces while the other two stay
+  full. Two neighbours at the SAME rotation have their tongues on the same
+  walls (the `shared_faces` state); rotate one 90° and the features land on
+  different faces (`interleaved`). So the length consumed per piece is
   `length + clearance(this piece → the next one)`:
 
   ```
   clearance(A→B) = kerf
-                  + max over SHARED faces f of (saliente_A[f] + saliente_B[f])
+                  + (StockSpec.shared_face_penalty_mm if A/B end features share a face, else 0)
                   + A.extra_gap_mm
   ```
+
+  **`shared_face_penalty_mm` defaults to 0, deliberately, and this is a
+  correction, not the original design.** The first version of this formula
+  charged `saliente_A + saliente_B` — summed the two parts' OWN declared
+  `protrusion_mm` — automatically, whenever their faces shared. Nobody had
+  measured that a real same-face collision needs exactly that much room; worse,
+  a design round working independently guessed a DIFFERENT number (12.0 mm
+  flat) for the identical physical situation. Two ungrounded guesses that
+  disagree is the signal that neither belongs in a cut plan. The penalty is
+  now an explicit **machine allowance** — it lives on `StockSpec` beside
+  `kerf`/`front_trim`/`back_trim`, not derived from the parts, exactly like
+  those: if the real number is ever measured, it is dropped in **once**, here,
+  not re-guessed per part. `--shared-face-penalty MM` (CLI, default 0) / `/v1`
+  `NestRequest.shared_face_penalty_mm` (default 0, `>= 0`, absent from
+  Harriet's frozen contract) set it.
 
   "Shared" is evaluated AFTER each part's `orientation_deg` rotates its
   declared faces (`nester.tube.packing._rotated_faces` — a feature on faces
   `[1, 3]` at 90° occupies `[2, 4]`); a rectangular profile's faces only
   rotate cleanly in 90° steps, so a non-multiple orientation (a round tube)
-  leaves declared faces unrotated rather than guessing. No shared faces → the
-  middle term is 0 and the pieces interleave. **Rotating a piece DOES change
-  the nest** (through this clearance) — it is a workshop CONTROL, not an
-  optimizer: forcing an orientation that costs more tramos is a legitimate
+  leaves declared faces unrotated rather than guessing. **Rotating a piece CAN
+  change the nest** (through this clearance) — but only once the shop has set
+  a real `shared_face_penalty_mm` or `extra_gap_mm`; at the default it never
+  does. It is a workshop CONTROL either way, not an optimizer: forcing an
+  orientation that costs more tramos, once a penalty is set, is a legitimate
   request (e.g. keeping every seam on the same face), never an error.
   `nester.tube.packing.clearance()` computes the pair, and `pack_profile`
   consults it per adjacent pair instead of adding a flat kerf — FFD still
   places longest-first, but is no longer provably optimal once clearance is
-  pair-dependent (valid first, optimal later; not attempted here). Every
-  `Placement` carries `gap_before` + `gap_reason` (`interleaved` /
-  `shared_faces` / `extra`, any combination) so the plan explains a hueco
-  wider (or narrower) than plain kerf instead of printing a bare number —
-  surfaced in `<job>_corte.json`'s `cuts[]` and in the cut-list page's
-  description column.
+  pair-dependent (valid first, optimal later; not attempted here).
+
+  Every `Placement` carries `gap_reason` (`interleaved` / `shared_faces` /
+  `extra`, any combination) — a STATE label about how the two ends are
+  clocked, kept even when it costs nothing — and `gap_terms`, the same gap
+  itemized into what it actually CHARGED (`kerf` always, plus
+  `shared_face_penalty`/`extra` only when they added real mm).
+  `gap_story_es()` renders `gap_terms`, not `gap_reason`, into the plan's
+  prose: `"ranura de corte (kerf) 3.0 mm · extra del taller +20.0 mm"`. A
+  joint labelled `shared_faces` with the penalty at 0 prints **no** story line
+  — the label survives on `gap_reason` for anyone who wants it, but the plan
+  never says "caras compartidas" next to a millimetre figure that was never
+  reserved. Surfaced in `<job>_corte.json`'s `cuts[]` (`gap_before` /
+  `gap_reason` / `gap_story`) and in the cut-list page's description column.
 
   Declared three ways, all optional and additive: CLI `--orient FILE=DEG`,
   `--extra-gap FILE=MM`, `--end-feature FILE=END:PROTRUSION_MM:FACES`
