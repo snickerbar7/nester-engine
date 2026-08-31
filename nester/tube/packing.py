@@ -5,9 +5,15 @@ open bar it still fits, otherwise start a new bar. Deterministic, fast, and
 gives strong yield for workshop nesting. Good enough that the bottleneck is the
 saw, not the math.
 
-Each placed part consumes ``length + kerf`` of the usable region (one cut to
-free it). This slightly over-reserves kerf on the last part of a bar, which is
-the safe direction for a real saw.
+Each placed part consumes its own length plus the gap reserved AFTER it — the
+saw kerf, always, plus two things a piece may declare for itself
+(docs/PLAN-orientacion-tubo.md): a protruding end feature (a welded tongue,
+say) that collides with the next piece's feature on a SHARED face, and any
+extra gap the shop asks for by hand. With neither in play the gap is exactly
+``kerf`` for every part, byte-identical to the tool before this existed. See
+:func:`clearance`. This slightly over-reserves kerf on the last part of a bar
+(nothing follows it, so its declared gap is never spent), which is the safe
+direction for a real saw.
 
 Stock is a full tramo (unlimited) plus, optionally, the shop's remnants
 (``StockSpec.extra_stock`` — E9). Within a run the SMALLEST remnant that fits a
@@ -40,15 +46,87 @@ purchase order does not shrink.
 
 from __future__ import annotations
 
-from typing import Iterable, List, Sequence, Tuple
+from typing import FrozenSet, Iterable, List, NamedTuple, Sequence, Tuple
 
 from .model import (
+    GAP_EXTRA, GAP_INTERLEAVED, GAP_SHARED_FACES,
     NEW_BAR, REMNANT_JOB_ENDED, REMNANT_NO_FIT, REMNANT_NO_GAIN,
     REMNANT_TOO_SMALL,
-    BarLayout, ExtraStock, Part, Placement, ProfileResult, StockSpec,
+    BarLayout, EndFeature, ExtraStock, Part, Placement, ProfileResult, StockSpec,
 )
 
 _EPS = 1e-9
+
+
+# --------------------------------------------------------------------------- #
+# Pair-dependent clearance (docs/PLAN-orientacion-tubo.md §2)
+# --------------------------------------------------------------------------- #
+
+class Clearance(NamedTuple):
+    """The gap between two consecutive pieces, and why it is that size."""
+
+    mm: float
+    reasons: Tuple[str, ...]
+
+
+def _rotated_faces(feature: EndFeature, orientation_deg: float) -> FrozenSet[int]:
+    """Which faces ``feature`` actually occupies once the part is clocked.
+
+    Rotating a piece rotates which faces its end features occupy: a feature on
+    faces [1, 3] at ``orientation_deg=90`` occupies [2, 4]. Only defined for a
+    rectangular profile's 4 faces, which only rotate cleanly in 90-degree
+    steps. A round tube's orientation is legitimately continuous (not
+    rejected — see ``Part.orientation_deg``), but then there is no clean face
+    to rotate onto, so the declared faces are used as-is rather than guessed
+    at; in practice a round part has no faces declared at all.
+    """
+    if not feature.faces:
+        return frozenset()
+    steps = orientation_deg / 90.0
+    if abs(steps - round(steps)) > 1e-6:
+        return frozenset(feature.faces)
+    shift = int(round(steps)) % 4
+    return frozenset(((f - 1 + shift) % 4) + 1 for f in feature.faces)
+
+
+def clearance(prev: Part, nxt: Part, kerf: float) -> Clearance:
+    """The gap reserved between ``prev``'s far end and ``nxt``'s start end.
+
+    ``prev`` must already be placed — this is never called for the first
+    piece on a bar (see :func:`_append`, where that case reserves 0 up front
+    and lets ``consumed_length``'s trailing kerf cover the eventual release
+    cut). Implements the formula from docs/PLAN-orientacion-tubo.md §2::
+
+        clearance(A->B) = kerf
+                         + max over SHARED faces f of (protrusion_A[f] + protrusion_B[f])
+                         + extra_gap requested by A
+
+    "Shared" is evaluated AFTER each part's own ``orientation_deg`` is
+    applied. A part's ``EndFeature`` carries one protrusion value for every
+    face it names (a real tongue relieves the faces it's on uniformly), so the
+    "max over shared faces" collapses to a single sum once any face is shared.
+
+    With no end features and no ``extra_gap_mm`` this returns exactly
+    ``kerf`` — the behaviour before this function existed.
+    """
+    prev_faces = _rotated_faces(prev.far_feature, prev.orientation_deg)
+    nxt_faces = _rotated_faces(nxt.start_feature, nxt.orientation_deg)
+    shared = prev_faces & nxt_faces
+
+    reasons: List[str] = []
+    face_term = 0.0
+    if shared:
+        face_term = prev.far_feature.protrusion_mm + nxt.start_feature.protrusion_mm
+        reasons.append(GAP_SHARED_FACES)
+    elif prev.far_feature.faces or nxt.start_feature.faces:
+        reasons.append(GAP_INTERLEAVED)
+
+    extra = max(prev.extra_gap_mm, 0.0)
+    if extra > 0:
+        reasons.append(GAP_EXTRA)
+
+    return Clearance(kerf + face_term + extra, tuple(reasons))
+
 
 #: Deterministic bound on the trial packs the minimal-subset search may spend.
 #: One trial is one full FFD run, so a rack of 200 pieces against a 500-part job
@@ -151,15 +229,23 @@ def _pack(parts: Sequence[Part], spec: StockSpec,
     fits.sort(key=lambda p: p.length, reverse=True)
 
     for part in fits:
-        need = part.length + spec.kerf
         placed = False
         for bar in result.bars:
-            if bar.remnant + _EPS >= need:
+            # A bar in `result.bars` always has >= 1 placement (see the
+            # assert below), so its last part is always defined here — the
+            # gap this candidate would need is PAIR-dependent (§2), not the
+            # flat kerf FFD used before orientation/end-features existed.
+            gap = clearance(bar.placements[-1].part, part, spec.kerf).mm
+            if bar.remnant + _EPS >= part.length + gap:
                 _append(bar, part)
                 placed = True
                 break
         if placed:
             continue
+        # A fresh bar: nothing precedes this piece there, so it only needs
+        # its own length + kerf (the trailing reserve for its eventual
+        # release cut — see BarLayout.consumed_length).
+        need = part.length + spec.kerf
         bar = _open_bar(result, spec, pool, need, tramo_usable)
         if bar is None:
             # Only an already-consumed remnant could ever have held it.
@@ -229,10 +315,23 @@ def _open_bar(
 
 
 def _append(bar: BarLayout, part: Part) -> None:
-    """Place a part at the current consumed offset of the bar."""
-    start = bar.consumed_length          # offset within usable region (kerf-inclusive)
-    end = start + part.length
-    bar.placements.append(Placement(part=part, start=start, end=end))
+    """Place a part at the bar's current end.
+
+    The first piece on a bar starts at 0 with no gap to report (front_trim
+    already accounts for the bar's own start; nothing precedes this piece
+    there). Otherwise the gap to the piece already at the bar's end is the
+    real pair-dependent :func:`clearance` — kerf, plus any shared-face
+    collision, plus the shop's requested extra gap.
+    """
+    if not bar.placements:
+        bar.placements.append(Placement(part=part, start=0.0, end=part.length))
+        return
+    prev = bar.placements[-1]
+    gap = clearance(prev.part, part, bar.spec.kerf)
+    start = prev.end + gap.mm
+    bar.placements.append(Placement(
+        part=part, start=start, end=start + part.length,
+        gap_before=gap.mm, gap_reason=gap.reasons))
 
 
 def pack_all(parts: Iterable[Part], specs: dict[str, StockSpec],

@@ -12,6 +12,34 @@ from typing import Dict, List, Tuple
 
 NEW_BAR = "nuevo"   # BarLayout.source for a full purchased tramo
 
+# Rectangular-profile faces, numbered 1..4 around the cross-section in the
+# part's OWN (un-rotated) reference frame. Part.orientation_deg is what maps
+# them onto the tube as actually clocked — see nester.tube.packing.clearance.
+_VALID_FACES = (1, 2, 3, 4)
+_VALID_ENDS = ("start", "far")
+
+# Why a gap between two pieces is what it is (docs/PLAN-orientacion-tubo.md
+# §2) — reported on Placement.gap_reason so the plan never prints a bare
+# number for a hueco wider or narrower than plain kerf.
+GAP_INTERLEAVED = "interleaved"       # end features present, no shared faces -> gap shrinks to kerf
+GAP_SHARED_FACES = "shared_faces"     # protrusions collide -> gap grows to clear them
+GAP_EXTRA = "extra"                   # the shop asked for extra room after the previous piece
+
+# Foreman-register Spanish for each reason, shared by the CLI's --json output
+# and the written report — a gap the shop didn't ask for should never print as
+# a bare, unexplained number.
+GAP_REASON_ES: Dict[str, str] = {
+    GAP_INTERLEAVED: "entrelazadas: las lengüetas no comparten cara",
+    GAP_SHARED_FACES: "caras compartidas: las lengüetas chocan",
+    GAP_EXTRA: "separación extra pedida por el taller",
+}
+
+
+def gap_story_es(reasons: Tuple[str, ...]) -> str:
+    """A gap's reasons joined into one phrase; '' for plain kerf (no story)."""
+    return " + ".join(GAP_REASON_ES.get(r, r) for r in reasons)
+
+
 # Why a remnant (retazo) offered to the job was never opened. Reported per
 # piece, mirroring the 2D reasons in ``nester.sheet.model``, so the shop can
 # tell "nothing fitted it" from "spending it would have bought nothing".
@@ -25,6 +53,29 @@ REMNANT_NO_GAIN = "no_gain"
 
 
 @dataclass(frozen=True)
+class EndFeature:
+    """A protrusion (e.g. a welded tongue) at one end of a part, on given faces.
+
+    ``faces`` are the rectangular-profile faces (1..4) it occupies in the
+    part's OWN reference frame, BEFORE ``Part.orientation_deg`` is applied.
+    Empty ``faces`` (the default) means a plain, flat end — nothing protrudes,
+    and it never contributes to a neighbour's clearance.
+    """
+
+    protrusion_mm: float = 0.0
+    faces: Tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.faces, tuple):
+            object.__setattr__(self, "faces", tuple(self.faces))
+        if self.protrusion_mm < 0:
+            raise ValueError(f"protrusion_mm must be >= 0, got {self.protrusion_mm}")
+        bad = [f for f in self.faces if f not in _VALID_FACES]
+        if bad:
+            raise ValueError(f"face(s) must be 1..4, got {bad}")
+
+
+@dataclass(frozen=True)
 class Part:
     """A single cut piece to be produced."""
 
@@ -32,9 +83,36 @@ class Part:
     profile: str       # profile/cross-section key used for grouping
     length: float      # required cut length
 
+    # How the shop clocks this piece in the tube (docs/PLAN-orientacion-tubo.md).
+    # 0.0 = as it came from CAD. Rectangular profiles use 0/90/180/270 in
+    # practice; a round tube's orientation is continuous, so a non-multiple of
+    # 90 is NOT rejected — it just has no meaningful face to rotate onto.
+    orientation_deg: float = 0.0
+    # Extra space the shop demands AFTER this piece, on top of kerf/features.
+    extra_gap_mm: float = 0.0
+    # Per end ("start"/"far") protrusion feature. Empty/absent = a plain,
+    # square end — and then this piece behaves exactly as it did before these
+    # fields existed (see nester.tube.packing.clearance).
+    end_features: Dict[str, EndFeature] = field(default_factory=dict)
+
     def __post_init__(self) -> None:
         if self.length <= 0:
             raise ValueError(f"{self.name}: part length must be > 0, got {self.length}")
+        object.__setattr__(self, "orientation_deg", self.orientation_deg % 360.0)
+        if self.extra_gap_mm < 0:
+            raise ValueError(f"{self.name}: extra_gap_mm must be >= 0, got {self.extra_gap_mm}")
+        bad_ends = set(self.end_features) - set(_VALID_ENDS)
+        if bad_ends:
+            raise ValueError(
+                f"{self.name}: end_features key(s) must be 'start'/'far', got {sorted(bad_ends)}")
+
+    @property
+    def start_feature(self) -> EndFeature:
+        return self.end_features.get("start", EndFeature())
+
+    @property
+    def far_feature(self) -> EndFeature:
+        return self.end_features.get("far", EndFeature())
 
 
 @dataclass(frozen=True)
@@ -112,6 +190,15 @@ class Placement:
     part: Part
     start: float   # position where this part begins (after front_trim, from bar zero)
     end: float     # position where this part ends (cut line for the *next* kerf)
+    # The gap actually reserved BEFORE this piece, between the previous
+    # piece's far end and this piece's start end. 0.0 for the first piece on a
+    # bar — nothing precedes it there but front_trim, which is outside the
+    # usable region and not this field's concern.
+    gap_before: float = 0.0
+    # Why gap_before is what it is: () for the first piece on a bar; otherwise
+    # any combination of GAP_INTERLEAVED / GAP_SHARED_FACES / GAP_EXTRA. See
+    # nester.tube.packing.clearance.
+    gap_reason: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -144,8 +231,19 @@ class BarLayout:
 
     @property
     def consumed_length(self) -> float:
-        """Length consumed from the usable region, including kerf per part."""
-        return sum(p.part.length + self.spec.kerf for p in self.placements)
+        """Length consumed from the usable region, including the trailing kerf
+        reserved to release the last piece from the remaining stock.
+
+        Each :class:`Placement` already carries its true, pair-dependent
+        ``start``/``end`` (set by :func:`nester.tube.packing._append`), so
+        this is simply "where the last cut ends" plus one more kerf — not a
+        fresh sum over uniform per-part reservations. With no end features and
+        no ``extra_gap_mm`` on any part, every gap equals ``kerf`` and this is
+        numerically IDENTICAL to the old ``sum(length + kerf for ...)``.
+        """
+        if not self.placements:
+            return 0.0
+        return self.placements[-1].end + self.spec.kerf
 
     @property
     def remnant(self) -> float:
