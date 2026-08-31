@@ -36,7 +36,7 @@ def test_native_profile_is_snake_case_engine_vocabulary():
         "reclaimable_mm", "waste_mm", "bars", "unplaceable",
     }
     assert set(d["bars"][0]) == {
-        "bar_index", "stock_length_mm", "source", "pieces_mm", "drop_mm",
+        "bar_index", "stock_length_mm", "source", "pieces_mm", "pieces", "drop_mm",
         "leftover_mm", "waste_mm"}
     # The net/gross pair is additive: yield_pct keeps its exact value, and with
     # no min_remnant nothing is reclaimable, so net == gross == yield_pct.
@@ -53,6 +53,43 @@ def test_native_profile_is_snake_case_engine_vocabulary():
     assert d["bars"][0]["stock_length_mm"] == 6000
     assert d["bars"][0]["source"] == "nuevo"
     assert d["bars"][0]["pieces_mm"] == [2000.0, 1500.0, 1200.0]
+    # ``pieces`` is additive detail alongside ``pieces_mm`` (unchanged above).
+    # Nothing declared (no orientation, no end_features) -> defaults, not
+    # absent fields.
+    assert set(d["bars"][0]["pieces"][0]) == {
+        "length_mm", "label", "orientation_deg", "end_features",
+        "gap_before", "gap_reason"}
+    assert [p["length_mm"] for p in d["bars"][0]["pieces"]] == [2000.0, 1500.0, 1200.0]
+    assert [p["label"] for p in d["bars"][0]["pieces"]] == ["p0", "p1", "p2"]
+    assert all(p["orientation_deg"] == 0.0 for p in d["bars"][0]["pieces"])
+    assert all(p["end_features"] == {} for p in d["bars"][0]["pieces"])
+    # First piece on a bar: no joint precedes it.
+    assert d["bars"][0]["pieces"][0]["gap_before"] == 0.0
+    assert d["bars"][0]["pieces"][0]["gap_reason"] == []
+    # Later pieces DO carry the joint before them: kerf is always charged in
+    # gap_before, but a plain kerf-only gap between two ordinary parts isn't
+    # one of the NAMED reasons (those flag interleaving/shared-face/extra-gap
+    # charges), so gap_reason stays empty here — matching report.py exactly.
+    assert d["bars"][0]["pieces"][1]["gap_before"] == 3.0
+    assert d["bars"][0]["pieces"][1]["gap_reason"] == []
+
+
+def test_native_profile_pieces_carry_orientation_and_end_features():
+    """The 'tramo desdoblado' view needs the per-piece detail report.py already
+    writes to the artifact — orientation_deg, end_features, the joint before."""
+    from nester.tube.model import EndFeature
+
+    parts = [
+        Part(name="p0", profile="2x2_c18", length=2000.0, orientation_deg=90.0,
+             end_features={"start": EndFeature(protrusion_mm=6.0, faces=(1, 3))}),
+        Part(name="p1", profile="2x2_c18", length=1500.0),
+    ]
+    spec = StockSpec(profile="2x2_c18", stock_length=6000, kerf=3, back_trim=300)
+    d = profile_result_to_dict(pack_profile(parts, spec))
+    p0 = d["bars"][0]["pieces"][0]
+    assert p0["label"] == "p0"
+    assert p0["orientation_deg"] == 90.0
+    assert p0["end_features"] == {"start": {"protrusion_mm": 6.0, "faces": [1, 3]}}
 
 
 def test_native_profile_reports_remnant_stock():

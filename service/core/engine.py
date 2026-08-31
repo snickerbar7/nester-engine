@@ -243,6 +243,15 @@ def extract_sheet(
 # NEST — native (engine-vocabulary) result; artifacts to R2
 # --------------------------------------------------------------------------- #
 
+def _piece_end_features(features: Dict[str, EndFeature]) -> Dict[str, Dict[str, Any]]:
+    """``Part.end_features`` -> the same ``{"start"/"far": {protrusion_mm, faces}}``
+    shape the request accepts (``service/v1/routes.py`` ``EndFeatureRef``), so a
+    client never has to learn a second vocabulary for the same facts. ``{}``
+    when nothing was declared."""
+    return {end: {"protrusion_mm": ef.protrusion_mm, "faces": list(ef.faces)}
+            for end, ef in features.items()}
+
+
 def profile_result_to_dict(r: ProfileResult) -> Dict[str, Any]:
     """One packed profile in the engine's own vocabulary (snake_case, mm)."""
     total_drop = sum(b.remnant for b in r.bars)
@@ -278,6 +287,27 @@ def profile_result_to_dict(r: ProfileResult) -> Dict[str, Any]:
                 "stock_length_mm": round(b.stock_length, 4),
                 "source": b.source,        # "nuevo" for a tramo, else the remnant label
                 "pieces_mm": [round(p.part.length, 4) for p in b.placements],
+                # Per-placement detail for clients that draw the tube unfolded
+                # (the "tramo desdoblado" view): which file, how it's clocked,
+                # its end features, and the joint before it. Purely additive —
+                # ``pieces_mm`` above is untouched and stays what it always was.
+                # Field names match ``nester.tube.report``'s ``cuts`` entries
+                # where they overlap (``orientation_deg``, ``gap_before``,
+                # ``gap_reason``); ``label``/``length_mm`` intentionally use
+                # this module's own vocabulary (``label`` for a source name,
+                # `_mm` unit suffixes) instead of report.py's `part`/`length`,
+                # matching how ``extract_tube`` already names a part's origin.
+                "pieces": [
+                    {
+                        "length_mm": round(p.part.length, 4),
+                        "label": p.part.name,
+                        "orientation_deg": p.part.orientation_deg,
+                        "end_features": _piece_end_features(p.part.end_features),
+                        "gap_before": round(p.gap_before, 4),
+                        "gap_reason": list(p.gap_reason),
+                    }
+                    for p in b.placements
+                ],
                 "drop_mm": round(b.remnant, 4),
                 "leftover_mm": round(b.leftover, 4),   # of the drop, worth keeping
                 "waste_mm": round(b.waste, 4),
