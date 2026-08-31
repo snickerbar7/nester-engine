@@ -149,7 +149,64 @@ IGES files ──▶ extract cut length ──▶ group by profile ──▶ pac
   `min_remnant` net == gross, so nothing moved for existing callers.
 - **Allowances**: `--kerf` per cut, `--front-trim` (clamp dead zone),
   `--back-trim` (far-end remnant). Usable = bar length − front − back (for a
-  retazo too). Each part reserves `length + kerf`.
+  retazo too). Each part reserves `length + clearance`, where `clearance`
+  defaults to `kerf` and grows when the shop declares orientation/end
+  features (below) — the two are the same reservation, not two mechanisms.
+- **Orientación angular de piezas (E26)** — the shop controls how each piece is
+  CLOCKED in the tube, and the solver charges the real consequence instead of
+  a flat kerf. Per part: `Part.orientation_deg` (0 = as it came from CAD;
+  rectangular profiles use 0/90/180/270 in practice, a round tube's is
+  continuous and is never rejected for not being a multiple of 90),
+  `Part.extra_gap_mm` (>= 0, extra room the shop demands AFTER this piece),
+  and `Part.end_features` — per end (`start`/`far`), `{protrusion_mm, faces}`
+  where `faces` are 1..4 in the part's OWN un-rotated frame. Empty/absent =
+  a plain square end, and then everything behaves exactly as it did before
+  these fields existed — **this is the load-bearing invariant**: a job with
+  no features and no extra_gap is byte-identical to the tool before E26,
+  proven by diffing `--json` output over `samples/` pre/post.
+
+  The physical fact this is built on — measured by sectioning a real customer
+  part (25.4×25.4 cal.18 PTR, 761.22 mm): a ~6 mm male tongue at each end, made
+  by relieving two opposite faces while the other two stay full. Two
+  neighbours at the SAME rotation have their tongues on the same walls and
+  collide — the gap must grow; rotate one 90° and the features land on
+  different faces — they interleave, and the gap drops back to kerf. So the
+  length consumed per piece stops being `length + kerf` and becomes
+  `length + clearance(this piece → the next one)`:
+
+  ```
+  clearance(A→B) = kerf
+                  + max over SHARED faces f of (saliente_A[f] + saliente_B[f])
+                  + A.extra_gap_mm
+  ```
+
+  "Shared" is evaluated AFTER each part's `orientation_deg` rotates its
+  declared faces (`nester.tube.packing._rotated_faces` — a feature on faces
+  `[1, 3]` at 90° occupies `[2, 4]`); a rectangular profile's faces only
+  rotate cleanly in 90° steps, so a non-multiple orientation (a round tube)
+  leaves declared faces unrotated rather than guessing. No shared faces → the
+  middle term is 0 and the pieces interleave. **Rotating a piece DOES change
+  the nest** (through this clearance) — it is a workshop CONTROL, not an
+  optimizer: forcing an orientation that costs more tramos is a legitimate
+  request (e.g. keeping every seam on the same face), never an error.
+  `nester.tube.packing.clearance()` computes the pair, and `pack_profile`
+  consults it per adjacent pair instead of adding a flat kerf — FFD still
+  places longest-first, but is no longer provably optimal once clearance is
+  pair-dependent (valid first, optimal later; not attempted here). Every
+  `Placement` carries `gap_before` + `gap_reason` (`interleaved` /
+  `shared_faces` / `extra`, any combination) so the plan explains a hueco
+  wider (or narrower) than plain kerf instead of printing a bare number —
+  surfaced in `<job>_corte.json`'s `cuts[]` and in the cut-list page's
+  description column.
+
+  Declared three ways, all optional and additive: CLI `--orient FILE=DEG`,
+  `--extra-gap FILE=MM`, `--end-feature FILE=END:PROTRUSION_MM:FACES`
+  (repeatable, once per end — `bracket.igs=far:6:1,3`); `/v1` `FileRef.
+  orientation_deg` / `extra_gap_mm` / `end_features` (tube-nesting only,
+  absent from Harriet's frozen `FileRef`). An OpenCASCADE extractor that reads
+  `end_features` off the solid geometry instead of the shop typing it by hand
+  is future work (`docs/PLAN-orientacion-tubo.md` §C) — not built yet; today
+  the shop (or an operator conversation) declares it by hand.
 - **Solver**: First Fit Decreasing — fast, deterministic, strong yield.
 
 ## Run a job

@@ -1,7 +1,10 @@
 # Plan — orientación angular de piezas de tubo (caras 1–4)
 
-**Estado:** definido, sin empezar. 2026-08-30 (tercera corrección — las dos
-primeras se equivocaron, la historia está en el git log de este archivo).
+**Estado:** §A y §B (motor + solver) HECHOS, 2026-08-30. §C (extractor
+OpenCASCADE), §D (declaración conversacional persistida), §E (web/IA) y §F
+(diseño) siguen sin empezar — fuera de alcance de esta ronda a propósito.
+(Tercera corrección de este documento — las dos primeras se equivocaron, la
+historia está en el git log de este archivo.)
 **Qué es:** el taller decide cómo queda girada cada pieza dentro del tubo, y el
 motor calcula la separación que esa decisión realmente exige.
 
@@ -81,25 +84,57 @@ contra el cual validarse.
 
 ## 4 · Checklist
 
-### A · Orientación y separación como dato *(motor)*
-- [ ] `Part.orientation_deg: float = 0.0` (rect: 0/90/180/270; redondo: continuo).
-- [ ] `Part.extra_gap_mm: float = 0.0`, `>= 0`.
-- [ ] `Part.end_features` — por extremo, `{saliente_mm, caras: [1..4]}`. Vacío =
-      extremo plano, y entonces todo se comporta como hoy.
-- [ ] CLI `--orient FILE=DEG`, `--extra-gap FILE=MM`, `--end-feature FILE=...`
-      (repetibles, como `--sets`).
-- [ ] `/v1` FileRef: los tres, opcionales y aditivos. `tests/test_service_contract.py`
-      verde — el contrato congelado de Harriet no los lleva.
+### A · Orientación y separación como dato *(motor)* — HECHO 2026-08-30
+- [x] `Part.orientation_deg: float = 0.0` (rect: 0/90/180/270; redondo: continuo).
+      Normalizado a `[0, 360)` en `__post_init__`; no rechaza valores que no son
+      múltiplos de 90.
+- [x] `Part.extra_gap_mm: float = 0.0`, `>= 0` (valida, lanza `ValueError` si no).
+- [x] `Part.end_features` — por extremo (`"start"`/`"far"`), un
+      `EndFeature(protrusion_mm, faces)`. Vacío/ausente = extremo plano, y
+      entonces todo se comporta como hoy (propiedades `start_feature` /
+      `far_feature` devuelven un `EndFeature()` por defecto).
+- [x] CLI `--orient FILE=DEG`, `--extra-gap FILE=MM`,
+      `--end-feature FILE=END:PROTRUSION_MM:FACES` (repetibles, como `--sets`;
+      `nester/tube/cli.py`: `parse_orient` / `parse_extra_gap` /
+      `parse_end_features`, aplicados por nombre de archivo en `_load_parts`).
+- [x] `/v1` FileRef: los tres, opcionales y aditivos
+      (`service/v1/routes.py::FileRef.orientation_deg/extra_gap_mm/end_features`
+      + `EndFeatureRef`), enrutados a través de `InFile` y
+      `service/core/engine.py::_orient_map/_extra_gap_map/_end_features_map`.
+      `tests/test_service_contract.py` verde — el contrato congelado de
+      Harriet (`service/harriet/`) no los lleva; pinneado en
+      `tests/test_service_api.py::test_harriet_infile_never_carries_orientation_fields`.
 
-### B · Separación dependiente del par *(solver)*
-- [ ] Función `clearance(prev, next)` con la fórmula de §2, kerf incluido.
-- [ ] `nester/tube/packing.py` la consulta en vez de sumar `kerf` fijo.
-- [ ] **Invariante:** ninguna barra se desborda con la separación real. Property
-      test sobre orientaciones y salientes aleatorias.
-- [ ] **Invariante:** con `end_features` vacío el resultado es **idéntico** al de
-      hoy, pieza por pieza. Pinnearlo — es la red que protege lo que ya funciona.
-- [ ] El plan reporta la separación por hueco y **por qué** (`entrelazadas` /
-      `caras compartidas` / `extra del taller`), no un número mudo.
+### B · Separación dependiente del par *(solver)* — HECHO 2026-08-30
+- [x] Función `clearance(prev, next, kerf)` en `nester/tube/packing.py` con la
+      fórmula de §2 (kerf incluido), más `_rotated_faces` para aplicar
+      `orientation_deg` a las caras declaradas antes de comparar.
+- [x] `nester/tube/packing.py::_pack`/`_append` la consultan por PAR en vez de
+      sumar `kerf` fijo; `BarLayout.consumed_length` ahora deriva de la
+      posición real de la última pieza colocada, no de una suma uniforme.
+- [x] **Invariante:** ninguna barra se desborda con la separación real.
+      Property test `tests/test_tube_orientation.py::
+      test_no_bar_ever_overflows_with_random_orientation_and_features` — 30
+      seeds, reconstruye cada `start`/`end` de forma independiente (nunca
+      confía en `consumed_length`/`remnant`, que están bajo prueba) y también
+      pinnea conservación de cantidad (cada pieza colocada exactamente una
+      vez, o en `unplaceable`).
+- [x] **Invariante:** con `end_features` vacío el resultado es **idéntico** al
+      de hoy, pieza por pieza. Pinneado dos veces: a nivel de solver
+      (`test_zero_change_when_unused`) y end-to-end sobre `samples/` — el
+      CLI `--json` de antes y de después son idénticos salvo por las claves
+      nuevas y aditivas (`orientation_deg`/`gap_before`/`gap_reason`/
+      `gap_story`), que además valen todas su default (`0.0`/`()`/`""`) en
+      cada corte. Comparación hecha con `git stash` (código viejo) vs. el
+      working tree (código nuevo) sobre los 5 IGES de `samples/`, ver el
+      mensaje del commit de esta ronda.
+- [x] El plan reporta la separación por hueco y **por qué** (`entrelazadas` /
+      `caras compartidas` / `extra del taller`), no un número mudo:
+      `Placement.gap_before` + `gap_reason` (constantes `GAP_*` en
+      `nester/tube/model.py`), `gap_story_es()` para el texto en español,
+      surfaceado en `<job>_corte.json` (`cuts[].gap_story`) y en la columna de
+      descripción de la hoja "Lista de cortes" del PDF (silencioso cuando no
+      hay historia que contar).
 
 ### C · Extractor de extremos *(nuevo, OpenCASCADE, fuera de banda)*
 - [ ] Script propio bajo `.venv-cad`, invocado como `solid_nest.py`. **No entra
