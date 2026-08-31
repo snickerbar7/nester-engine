@@ -227,6 +227,48 @@ def test_v1_nest_extra_stock_defaults_to_empty(client, monkeypatch):
     assert seen["extra_stock"] == []
 
 
+def test_v1_nest_passes_orientation_fields_through_as_infile_attrs(client, monkeypatch):
+    """docs/PLAN-orientacion-tubo.md §A: orientation_deg / extra_gap_mm /
+    end_features on a v1 FileRef must reach the InFile the engine sees."""
+    seen = {}
+    monkeypatch.setattr(engine, "nest_tube",
+                        lambda files, **kw: (seen.update(files=files), dict(NATIVE_NEST))[1])
+    r = client.post("/v1/nest", headers=WEB, json={
+        "files": [{"key": "web/u1/a.igs", "filename": "Base_2x2_C18_302_4pz.igs",
+                   "orientation_deg": 90, "extra_gap_mm": 5,
+                   "end_features": [{"end": "far", "protrusion_mm": 6, "faces": [1, 3]}]}],
+        "stock_length_mm": 6000})
+    assert r.status_code == 200
+    f = seen["files"][0]
+    assert f.orientation_deg == 90
+    assert f.extra_gap_mm == 5
+    assert f.end_features == {"far": {"protrusion_mm": 6.0, "faces": [1, 3]}}
+
+
+def test_v1_nest_orientation_fields_default_to_untouched(client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(engine, "nest_tube",
+                        lambda files, **kw: (seen.update(files=files), dict(NATIVE_NEST))[1])
+    client.post("/v1/nest", headers=WEB, json={"files": WEB_FILES, "stock_length_mm": 6000})
+    f = seen["files"][0]
+    assert f.orientation_deg == 0.0
+    assert f.extra_gap_mm == 0.0
+    assert f.end_features == {}
+
+
+def test_harriet_infile_never_carries_orientation_fields(client, monkeypatch):
+    """The frozen Harriet contract has no orientation vocabulary at all — its
+    own FileRef/_infiles must keep producing plain, untouched InFiles."""
+    seen = {}
+    monkeypatch.setattr(engine, "nest_tube",
+                        lambda files, **kw: (seen.update(files=files), dict(NATIVE_NEST))[1])
+    client.post("/nest", headers=HARRIET, json={"files": TUBE_FILES, "stock_length": 6000})
+    f = seen["files"][0]
+    assert f.orientation_deg == 0.0
+    assert f.extra_gap_mm == 0.0
+    assert f.end_features == {}
+
+
 def test_v1_nest_rejects_unusable_extra_stock(client):
     bad = [
         {"profile": "2x2_c18", "length_mm": 2140, "label": "  "},   # no label
@@ -402,3 +444,30 @@ def test_v1_downloads_happy_path(presign_client):
     assert "Plan_de_Corte.pdf" in first["url"].replace("%22", '"').replace("%20", " ")
     # no filename -> no disposition override
     assert "response-content-disposition" not in second["url"].lower()
+
+
+# --------------------------------------------------------------------------- #
+# engine._orient_map / _extra_gap_map / _end_features_map — pure helpers that
+# turn InFile.orientation_deg/extra_gap_mm/end_features into the per-basename
+# maps nester.tube.cli._load_parts expects (docs/PLAN-orientacion-tubo.md §A).
+# --------------------------------------------------------------------------- #
+
+def test_engine_orient_extra_gap_end_features_maps():
+    files = [
+        engine.InFile(key="k1", filename="a.igs", orientation_deg=90.0, extra_gap_mm=3.5,
+                      end_features={"far": {"protrusion_mm": 6.0, "faces": [1, 3]}}),
+        engine.InFile(key="k2", filename="b.igs"),   # every default untouched
+    ]
+    assert engine._orient_map(files) == {"a.igs": 90.0, "b.igs": 0.0}
+    assert engine._extra_gap_map(files) == {"a.igs": 3.5, "b.igs": 0.0}
+    ef = engine._end_features_map(files)
+    assert set(ef) == {"a.igs"}          # "b.igs" declared nothing -> absent, not {}
+    assert ef["a.igs"]["far"].protrusion_mm == 6.0
+    assert ef["a.igs"]["far"].faces == (1, 3)
+
+
+def test_engine_end_features_map_raises_on_bad_face():
+    files = [engine.InFile(key="k1", filename="a.igs",
+                           end_features={"far": {"protrusion_mm": 6.0, "faces": [9]}})]
+    with pytest.raises(ValueError):
+        engine._end_features_map(files)
