@@ -66,6 +66,19 @@ TUBE_IS_SYNC = (
 # Schemas
 # --------------------------------------------------------------------------- #
 
+class EndFeatureRef(BaseModel):
+    """A protrusion (e.g. a welded tongue) at one end of a tube part — E26 /
+    docs/PLAN-orientacion-tubo.md. Tube nesting only."""
+
+    end: str = Field(..., description="'start' or 'far'")
+    protrusion_mm: float = Field(..., ge=0, description="how far it sticks out")
+    faces: List[int] = Field(
+        default_factory=list,
+        description="rectangular-profile faces it occupies, 1..4, in the "
+                    "part's OWN (un-rotated) frame — orientation_deg rotates "
+                    "them onto the tube as actually clocked")
+
+
 class FileRef(BaseModel):
     key: str = Field(..., description="object key (opaque to the service)")
     filename: str = Field(..., description="original filename (profile+qty parsed from it)")
@@ -75,6 +88,22 @@ class FileRef(BaseModel):
                     "quantity = qty parsed from the filename x sets "
                     "(a '_2pz' file with sets=50 cuts 100 pieces). Applies to "
                     f"both modes; 1..{MAX_SETS}, default 1.")
+    orientation_deg: float = Field(
+        0.0,
+        description="TUBE ONLY — how the shop clocks this piece in the tube "
+                    "(docs/PLAN-orientacion-tubo.md). 0 = as it came from "
+                    "CAD. Changes the nest through clearance(): rotating a "
+                    "piece rotates which faces its end_features occupy.")
+    extra_gap_mm: float = Field(
+        0.0, ge=0,
+        description="TUBE ONLY — extra space the shop wants AFTER this "
+                    "piece, on top of kerf/features.")
+    end_features: List[EndFeatureRef] = Field(
+        default_factory=list,
+        description="TUBE ONLY — protrusions at this piece's ends (at most "
+                    "one entry per 'start'/'far'). Empty (default) = plain "
+                    "square ends, and every one of these three fields is "
+                    "additive: omit them and the nest is unchanged.")
 
 
 class ExtractRequest(BaseModel):
@@ -245,7 +274,15 @@ MAX_UPLOAD_FILES = 50
 
 
 def _infiles(files: List[FileRef]) -> List[InFile]:
-    return [InFile(key=f.key, filename=f.filename, sets=f.sets) for f in files]
+    return [
+        InFile(
+            key=f.key, filename=f.filename, sets=f.sets,
+            orientation_deg=f.orientation_deg, extra_gap_mm=f.extra_gap_mm,
+            end_features={ef.end: {"protrusion_mm": ef.protrusion_mm, "faces": ef.faces}
+                          for ef in f.end_features},
+        )
+        for f in files
+    ]
 
 
 def _resolve_mode(mode: str, files: List[InFile]) -> str:

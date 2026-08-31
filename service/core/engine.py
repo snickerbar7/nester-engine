@@ -15,7 +15,7 @@ import math
 import mimetypes
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import r2  # object keys are opaque strings supplied by the caller
@@ -23,7 +23,7 @@ from . import r2  # object keys are opaque strings supplied by the caller
 # --- tube pipeline (unchanged engine) ---
 from nester.tube.cli import _load_parts as _tube_load_parts
 from nester.tube.cli import last_load_notes as _tube_load_notes
-from nester.tube.model import ExtraStock, ProfileResult, StockSpec
+from nester.tube.model import EndFeature, ExtraStock, ProfileResult, StockSpec
 from nester.tube.packing import pack_all
 from nester.tube.profile import (
     DEFAULT_PROFILE_REGEX,
@@ -65,6 +65,14 @@ class InFile:
     # behaviour, so the frozen Harriet contract (which never sends it) is
     # byte-identical.
     sets: int = 1
+    # Orientation & clearance (docs/PLAN-orientacion-tubo.md) — tube nesting
+    # only. All three default to "nothing declared", so the frozen Harriet
+    # contract (which never sends them) and any /v1 caller that omits them are
+    # byte-identical to before these fields existed.
+    orientation_deg: float = 0.0
+    extra_gap_mm: float = 0.0
+    # {"start"|"far": {"protrusion_mm": float, "faces": [int, ...]}}
+    end_features: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 def infer_mode(files: List[InFile]) -> str:
@@ -96,6 +104,43 @@ def _sets_map(files: List[InFile]) -> Dict[str, int]:
     files keep their original name, which is what carries qty AND profile)."""
     return {os.path.basename(f.filename) or "part": max(int(getattr(f, "sets", 1) or 1), 1)
             for f in files}
+
+
+def _orient_map(files: List[InFile]) -> Dict[str, float]:
+    """{basename: orientation_deg} — 0.0 (untouched) for anything not declared."""
+    return {os.path.basename(f.filename) or "part": float(getattr(f, "orientation_deg", 0.0) or 0.0)
+            for f in files}
+
+
+def _extra_gap_map(files: List[InFile]) -> Dict[str, float]:
+    """{basename: extra_gap_mm}. Validated (>= 0) in nest_tube before use."""
+    return {os.path.basename(f.filename) or "part": float(getattr(f, "extra_gap_mm", 0.0) or 0.0)
+            for f in files}
+
+
+def _end_features_map(files: List[InFile]) -> Dict[str, Dict[str, EndFeature]]:
+    """{basename: {"start"/"far": EndFeature}} built from the raw request dicts.
+
+    Raises ValueError (caught by the route as a 400) naming the file and end
+    if a declared feature is invalid — same validation Part/EndFeature always
+    apply, just surfaced before the solver runs.
+    """
+    out: Dict[str, Dict[str, EndFeature]] = {}
+    for f in files:
+        raw = getattr(f, "end_features", None) or {}
+        if not raw:
+            continue
+        name = os.path.basename(f.filename) or "part"
+        built: Dict[str, EndFeature] = {}
+        for end, spec in raw.items():
+            try:
+                built[end] = EndFeature(
+                    protrusion_mm=float(spec.get("protrusion_mm", 0.0) or 0.0),
+                    faces=tuple(int(x) for x in spec.get("faces", []) or ()))
+            except (ValueError, TypeError, AttributeError) as e:
+                raise ValueError(f"{name}/end_features/{end}: {e}")
+        out[name] = built
+    return out
 
 
 def _qty_from_name(filename: str, qty_regex: Optional[str]) -> int:
@@ -317,8 +362,13 @@ def nest_tube(
     with tempfile.TemporaryDirectory() as tmp:
         paths = _materialize(files, tmp)
         # sets multiplies demand BEFORE packing: the bars to buy scale with it.
+        # orient/extra_gap/end_features change the nest through clearance()
+        # (docs/PLAN-orientacion-tubo.md §B) — all default to "not declared",
+        # so a caller that never sends them gets today's plan unchanged.
         parts, errors, cross = _tube_load_parts(
-            paths, profile_regex, qty_regex, _sets_map(files))
+            paths, profile_regex, qty_regex, _sets_map(files),
+            orient=_orient_map(files), extra_gap=_extra_gap_map(files),
+            end_features=_end_features_map(files))
         # E25 parser notes: unaccounted-for entity types. Separate channel from
         # `warnings` (which Harriet reads as "artifact missing").
         notes: List[str] = _tube_load_notes()
